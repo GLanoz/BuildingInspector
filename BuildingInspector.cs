@@ -17,7 +17,11 @@ namespace BuildingInspector
     {
         public const string PluginGUID = "Lanoz.BuildingInspector";
         public const string PluginName = "Building Inspector";
-        public const string PluginVersion = "0.1.10";
+        public const string PluginVersion = "0.2.1";
+
+        private const int FlagVariantCount = 6;
+        private const string NoteRpcName = "BuildingInspector_SetFlagNote";
+        private const string NoteZdoKey = "BuildingInspector_FlagNote";
 
         private static readonly List<Texture2D> IconTextures = new List<Texture2D>();
         private static Texture2D clothTexture;
@@ -28,20 +32,18 @@ namespace BuildingInspector
         private static ConfigEntry<KeyCode> tiltRightKey;
         private static ConfigEntry<float> tiltStepDegrees;
         private static ConfigEntry<float> maxTiltDegrees;
+        private static ConfigEntry<KeyCode> editNoteKey;
+        private static readonly List<ConfigEntry<string>> labelNames = new List<ConfigEntry<string>>();
+        private static readonly List<ConfigEntry<string>> labelDescriptions = new List<ConfigEntry<string>>();
+        private static readonly List<ConfigEntry<string>> labelColors = new List<ConfigEntry<string>>();
+        private static FlagVariant[] flagVariants;
+        private static FlagNoteReceiver noteInput;
         private static float tiltX;
         private static float tiltZ;
         private static GameObject lastTiltedGhost;
         private static Quaternion lastGhostBaseRotation;
         private static Quaternion lastGhostRotation;
         private static bool hasLastGhostRotation;
-
-        private static readonly FlagVariant[] FlagVariants =
-        {
-            new FlagVariant("Inspection Flag - Problem", "Red flag: a building issue was found.", "InspectionFlagRed", new Color(0.98f, 0.18f, 0.12f)),
-            new FlagVariant("Inspection Flag - Review", "Yellow flag: this part of the building needs review.", "InspectionFlagYellow", new Color(1f, 0.88f, 0.08f)),
-            new FlagVariant("Inspection Flag - Verified", "Green flag: this part of the building was inspected.", "InspectionFlagGreen", new Color(0.12f, 0.9f, 0.2f)),
-            new FlagVariant("Inspection Flag - Other", "Blue flag: another inspection category.", "InspectionFlagBlue", new Color(0.12f, 0.5f, 1f))
-        };
 
         private void Awake()
         {
@@ -52,8 +54,66 @@ namespace BuildingInspector
             tiltRightKey = Config.Bind("Flag Rotation", "TiltRightKey", KeyCode.L, "Tilt the flag to the right.");
             tiltStepDegrees = Config.Bind("Flag Rotation", "TiltStepDegrees", 15f, "Tilt change per key press in degrees.");
             maxTiltDegrees = Config.Bind("Flag Rotation", "MaxTiltDegrees", 60f, "Maximum tilt angle in either direction.");
+            editNoteKey = Config.Bind("Flag Notes", "EditNoteKey", KeyCode.N, "Edit the note on the aimed inspection flag.");
+            BindFlagVariants();
+            noteInput = gameObject.AddComponent<FlagNoteReceiver>();
             new Harmony(PluginGUID).PatchAll(typeof(BuildingInspector).Assembly);
             PrefabManager.OnVanillaPrefabsAvailable += RegisterInspectionFlag;
+        }
+
+        private void BindFlagVariants()
+        {
+            int[] configSlots = { 1, 2, 3, 4, 5, 6 };
+            string[] defaultNames = { "Problem", "Review", "Verified", "Other", "Structural", "Finish" };
+            string[] defaultDescriptions =
+            {
+                "A building issue was found.", "This part needs review.", "This part was inspected.", "Another inspection category.",
+                "Structural work needs attention.", "Finishing work needs attention."
+            };
+            string[] defaultColors = { "#FA2E1F", "#FFE014", "#1FE633", "#1F80FF", "#A64DFF", "#F2F2F2" };
+            string[] prefabNames = { "InspectionFlagRed", "InspectionFlagYellow", "InspectionFlagGreen", "InspectionFlagBlue", "InspectionFlagCustom5", "InspectionFlagCustom8" };
+            flagVariants = new FlagVariant[FlagVariantCount];
+
+            for (int index = 0; index < FlagVariantCount; index++)
+            {
+                int number = configSlots[index];
+                labelNames.Add(Config.Bind("Flag Labels", $"Label{number}Name", defaultNames[index], "Display name for this flag category."));
+                labelDescriptions.Add(Config.Bind("Flag Labels", $"Label{number}Description", defaultDescriptions[index], "Description shown in the build menu."));
+                labelColors.Add(Config.Bind("Flag Labels", $"Label{number}Color", defaultColors[index], "Flag color as a hex value, for example #FF0000."));
+
+                Color color;
+                if (!ColorUtility.TryParseHtmlString(labelColors[index].Value, out color))
+                {
+                    color = Color.white;
+                    Logger.LogWarning($"Invalid color for Label{number}Color; using white.");
+                }
+
+                string name = string.IsNullOrWhiteSpace(labelNames[index].Value) ? defaultNames[index] : labelNames[index].Value.Trim();
+                string description = labelDescriptions[index].Value ?? string.Empty;
+                flagVariants[index] = new FlagVariant($"Inspection Flag - {name}", description, prefabNames[index], color);
+            }
+
+            ConfigEntry<bool> finishSlotMigrated = Config.Bind("Migrations", "FinishLabelMovedToSlot6", false,
+                "Internal migration marker. Do not change.");
+            if (!finishSlotMigrated.Value)
+            {
+                ConfigEntry<string> oldFinishName = Config.Bind("Flag Labels", "Label8Name", "Finish", "Deprecated; moved to Label6Name.");
+                ConfigEntry<string> oldFinishDescription = Config.Bind("Flag Labels", "Label8Description", "Finishing work needs attention.", "Deprecated; moved to Label6Description.");
+                ConfigEntry<string> oldFinishColor = Config.Bind("Flag Labels", "Label8Color", "#F2F2F2", "Deprecated; moved to Label6Color.");
+
+                labelNames[5].Value = string.IsNullOrWhiteSpace(oldFinishName.Value) ? "Finish" : oldFinishName.Value;
+                labelDescriptions[5].Value = oldFinishDescription.Value ?? "Finishing work needs attention.";
+                labelColors[5].Value = oldFinishColor.Value ?? "#F2F2F2";
+                finishSlotMigrated.Value = true;
+                Config.Save();
+
+                Color migratedColor;
+                if (ColorUtility.TryParseHtmlString(labelColors[5].Value, out migratedColor))
+                {
+                    flagVariants[5] = new FlagVariant($"Inspection Flag - {labelNames[5].Value.Trim()}", labelDescriptions[5].Value,
+                        prefabNames[5], migratedColor);
+                }
+            }
         }
 
         private void RegisterInspectionFlag()
@@ -68,6 +128,32 @@ namespace BuildingInspector
             catch (Exception exception)
             {
                 Logger.LogError($"Failed to register Inspection Flag: {exception}");
+            }
+        }
+
+        private void Update()
+        {
+            if (editNoteKey == null || !Input.GetKeyDown(editNoteKey.Value) || TextInput.IsVisible())
+            {
+                return;
+            }
+
+            Camera camera = Camera.main;
+            if (!camera)
+            {
+                return;
+            }
+
+            Ray ray = camera.ScreenPointToRay(new Vector3(Screen.width * 0.5f, Screen.height * 0.5f));
+            if (!Physics.Raycast(ray, out RaycastHit hit, 6f, Physics.DefaultRaycastLayers, QueryTriggerInteraction.Ignore))
+            {
+                return;
+            }
+
+            FlagNoteReceiver receiver = hit.collider.GetComponentInParent<FlagNoteReceiver>();
+            if (receiver)
+            {
+                noteInput.Open(receiver.GetComponent<ZNetView>());
             }
         }
 
@@ -86,28 +172,51 @@ namespace BuildingInspector
                 throw new InvalidOperationException("Could not find the Piece component on vanilla wood_pole.");
             }
 
+            WearNTear sourceWearNTear = materialSource.GetComponent<WearNTear>();
+            if (!sourceWearNTear)
+            {
+                throw new InvalidOperationException("Could not find the WearNTear component on vanilla wood_pole.");
+            }
+
             Material woodMaterial = sourceRenderer.sharedMaterial;
             int pieceLayer = LayerMask.NameToLayer("piece");
             int registeredCount = 0;
 
-            foreach (FlagVariant variant in FlagVariants)
+            foreach (FlagVariant variant in flagVariants)
             {
-                if (AddInspectionFlag(variant, woodMaterial, sourcePiece.m_placeEffect, pieceLayer))
+                if (AddInspectionFlag(variant, woodMaterial, sourcePiece.m_placeEffect, sourceWearNTear, pieceLayer))
                 {
                     registeredCount++;
                 }
             }
 
-            if (registeredCount != FlagVariants.Length)
+            if (registeredCount != flagVariants.Length)
             {
-                throw new InvalidOperationException($"Only {registeredCount} of {FlagVariants.Length} Inspection Flags were registered.");
+                throw new InvalidOperationException($"Only {registeredCount} of {flagVariants.Length} Inspection Flags were registered.");
+            }
+
+            var blockingFlags = new List<Piece>();
+            foreach (FlagVariant variant in flagVariants)
+            {
+                GameObject flagPrefab = PrefabManager.Cache.GetPrefab<GameObject>(variant.PrefabName);
+                Piece flagPiece = flagPrefab ? flagPrefab.GetComponent<Piece>() : null;
+                if (flagPiece)
+                {
+                    blockingFlags.Add(flagPiece);
+                }
+            }
+
+            foreach (Piece flagPiece in blockingFlags)
+            {
+                flagPiece.m_blockingPieces = blockingFlags;
+                flagPiece.m_blockRadius = 0.2f;
             }
 
             return registeredCount;
         }
 
         private bool AddInspectionFlag(FlagVariant variant, Material woodMaterial,
-            EffectList placeEffect, int pieceLayer)
+            EffectList placeEffect, WearNTear sourceWearNTear, int pieceLayer)
         {
             GameObject prefab = PrefabManager.Instance.CreateEmptyPrefab(variant.PrefabName, true);
             if (!prefab)
@@ -117,6 +226,9 @@ namespace BuildingInspector
 
             prefab.transform.localScale = Vector3.one * 0.5f;
             prefab.AddComponent<Piece>();
+            prefab.AddComponent<FlagNoteReceiver>();
+            GameObject visuals = new GameObject("InspectionFlagVisuals");
+            visuals.transform.SetParent(prefab.transform, false);
 
             BoxCollider collider = prefab.GetComponent<BoxCollider>();
             if (!collider)
@@ -138,10 +250,23 @@ namespace BuildingInspector
             collider.center = new Vector3(0f, 0.68f, 0f);
             collider.size = new Vector3(0.55f, 1.4f, 0.16f);
 
-            AddPrimitive(prefab, PrimitiveType.Cylinder, "InspectionFlagPole",
+            AddPrimitive(visuals, PrimitiveType.Cylinder, "InspectionFlagPole",
                 new Vector3(0f, 0.58f, 0f), new Vector3(0.027f, 0.68f, 0.027f),
                 woodMaterial, pieceLayer);
-            AddClothSprite(prefab, variant, pieceLayer);
+            AddClothSprite(visuals, variant, pieceLayer);
+
+            WearNTear wearNTear = prefab.AddComponent<WearNTear>();
+            wearNTear.m_new = visuals;
+            wearNTear.m_worn = visuals;
+            wearNTear.m_broken = visuals;
+            wearNTear.m_noRoofWear = true;
+            wearNTear.m_noSupportWear = sourceWearNTear.m_noSupportWear;
+            wearNTear.m_supports = false;
+            wearNTear.m_staticPosition = sourceWearNTear.m_staticPosition;
+            wearNTear.m_materialType = sourceWearNTear.m_materialType;
+            wearNTear.m_health = sourceWearNTear.m_health;
+            wearNTear.m_autoCreateFragments = false;
+            wearNTear.m_fragmentRoots = Array.Empty<GameObject>();
 
             var config = new PieceConfig
             {
@@ -360,6 +485,74 @@ namespace BuildingInspector
                 Description = description;
                 PrefabName = prefabName;
                 Color = color;
+            }
+        }
+
+        private sealed class FlagNoteReceiver : MonoBehaviour, TextReceiver, Hoverable
+        {
+            private ZNetView nview;
+
+            private void Awake()
+            {
+                nview = GetComponent<ZNetView>();
+                if (nview)
+                {
+                    nview.Register<string>(NoteRpcName, SetNoteRpc);
+                }
+            }
+
+            public void Open(ZNetView target)
+            {
+                nview = target;
+                if (nview && TextInput.instance)
+                {
+                    TextInput.instance.RequestText(this, "Inspection flag note", 160);
+                }
+            }
+
+            public string GetText()
+            {
+                return nview && nview.GetZDO() != null ? nview.GetZDO().GetString(NoteZdoKey, string.Empty) : string.Empty;
+            }
+
+            public string GetHoverText()
+            {
+                Piece piece = GetComponent<Piece>();
+                string text = piece ? piece.m_name : "Inspection Flag";
+                string note = GetText();
+                if (!string.IsNullOrWhiteSpace(note))
+                {
+                    text += $"\n<color=#FFE080>Note:</color> {note}";
+                }
+
+                return text + $"\n[<color=yellow><b>{editNoteKey.Value}</b></color>] Edit note";
+            }
+
+            public string GetHoverName()
+            {
+                Piece piece = GetComponent<Piece>();
+                return piece ? piece.m_name : "Inspection Flag";
+            }
+
+            public float GetHoverOffset()
+            {
+                return 0f;
+            }
+
+            public void SetText(string text)
+            {
+                if (nview && nview.GetZDO() != null)
+                {
+                    nview.InvokeRPC(NoteRpcName, (text ?? string.Empty).Trim());
+                }
+            }
+
+            private void SetNoteRpc(long sender, string text)
+            {
+                if (nview && nview.IsOwner() && nview.GetZDO() != null)
+                {
+                    nview.GetZDO().Set(NoteZdoKey, text ?? string.Empty);
+                }
             }
         }
 
