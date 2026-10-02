@@ -1,0 +1,45 @@
+# Building Inspector 0.1.7
+
+A minimal BepInEx plugin for Valheim. It adds four free flags to Hammer → `Inspection`: red marks a problem, yellow marks something to review, green marks an inspected area, and blue marks another category. Rotate around the vertical axis with the mouse wheel. While a flag placement ghost is active, use `PageUp`/`PageDown` to tilt it forward or backward, `Home`/`End` to tilt it sideways, and `Insert` to reset it upright. Flags are built from Unity primitives at runtime; no external AssetBundle is required. The mod does not scan or analyze buildings automatically.
+
+## Requirements
+
+
+The plugin uses Jötunn's `CustomPiece(GameObject, bool, PieceConfig)`, `PieceManager.Instance.AddPiece`, `PrefabManager.Instance.CreateEmptyPrefab`, and `PrefabManager.Cache.GetPrefab` APIs. Each generated prefab has a persistent `ZNetView`, so placed flags are saved with the world and can be removed with the regular Hammer.
+
+## Setup in VS Code
+
+1. Install [BepInExPack Valheim](https://thunderstore.io/c/valheim/p/denikson/BepInExPack_Valheim/) and [Jötunn](https://thunderstore.io/c/valheim/p/ValheimModding/Jotunn/) in the Thunderstore/r2modman profile used to launch the game.
+2. Open the project folder in VS Code.
+3. Create `BuildingInspector.local.props` next to `BuildingInspector.csproj` and set your local game and plugin paths:
+
+   ```xml
+   <Project>
+     <PropertyGroup>
+       <ValheimPath>C:\path\to\Valheim</ValheimPath>
+       <PluginDeployPath>C:\path\to\profile\BepInEx\plugins\Lanoz-BuildingInspector</PluginDeployPath>
+     </PropertyGroup>
+   </Project>
+   ```
+
+   `ValheimPath` is the game root containing `valheim.exe` and `valheim_Data`. `PluginDeployPath` is the active profile's Building Inspector plugin folder. Both values are machine-specific, so the local props file is ignored by Git.
+
+4. From the project folder, run:
+
+   ```powershell
+   dotnet build
+   ```
+
+The build restores compile-time packages, writes `bin/Debug/net472/BuildingInspector.dll`, and copies the DLL to `PluginDeployPath`. BepInEx and Jötunn must be installed in the same active profile when running the game.
+
+## Test In Game
+
+1. Launch Valheim through Thunderstore/r2modman with the profile containing BepInEx, Jötunn, and Building Inspector. Enter a world and equip the regular Hammer.
+2. Open the build menu and choose `Inspection`, then select `Inspection Flag - Problem`, `Inspection Flag - Review`, `Inspection Flag - Verified`, or `Inspection Flag - Other`.
+3. Rotate with the mouse wheel. Tilt with `PageUp`/`PageDown` or `Home`/`End`; press `Insert` to reset upright. Each tilt step is 15 degrees, up to 60 degrees in either direction.
+4. Place the flag. All four variants are free. Use the regular Hammer removal action to remove one.
+5. Check `BepInEx/LogOutput.log` in the active profile. The plugin logs `Building Inspector loading...`, `Inspection Flags registered: 4.`, and `Building Inspector loaded!`; registration errors include the cause.
+
+For multiplayer, install BepInEx, Jötunn, and this mod on the server and every connecting client.
+
+## API References

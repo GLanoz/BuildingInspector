@@ -1,0 +1,63 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net472</TargetFramework>
+    <LangVersion>latest</LangVersion>
+    <Nullable>disable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <ValheimPath></ValheimPath>
+    <PluginDeployPath></PluginDeployPath>
+  </PropertyGroup>
+
+  <Import Project="BuildingInspector.local.props" Condition="Exists('BuildingInspector.local.props')" />
+
+  <ItemGroup>
+    <Reference Include="Assembly-CSharp">
+      <HintPath>$(ValheimPath)\valheim_Data\Managed\Assembly-CSharp.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+
+    <Reference Include="assembly_valheim">
+      <HintPath>$(ValheimPath)\valheim_Data\Managed\assembly_valheim.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+
+    <Reference Include="assembly_utils">
+      <HintPath>$(ValheimPath)\valheim_Data\Managed\assembly_utils.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+
+    <Reference Include="UnityEngine.CoreModule">
+      <HintPath>$(ValheimPath)\valheim_Data\Managed\UnityEngine.CoreModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+
+    <Reference Include="UnityEngine.PhysicsModule">
+      <HintPath>$(ValheimPath)\valheim_Data\Managed\UnityEngine.PhysicsModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+
+    <PackageReference Include="BepInEx.Core" Version="5.4.21" />
+    <PackageReference Include="JotunnLib" Version="2.30.2" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NETFramework.ReferenceAssemblies" Version="1.0.3">
+      <PrivateAssets>all</PrivateAssets>
+    </PackageReference>
+  </ItemGroup>
+
+  <Target Name="ValidateValheimPath" BeforeTargets="PrepareForBuild">
+      <Error Condition="'$(ValheimPath)' == ''" Text="Set ValheimPath in BuildingInspector.local.props to the Valheim installation directory." />
+    <Error Condition="!Exists('$(ValheimPath)\valheim_Data\Managed\Assembly-CSharp.dll')" Text="Valheim's Assembly-CSharp.dll was not found under ValheimPath." />
+    <Error Condition="!Exists('$(ValheimPath)\valheim_Data\Managed\assembly_valheim.dll')" Text="Valheim's assembly_valheim.dll was not found under ValheimPath." />
+    <Error Condition="!Exists('$(ValheimPath)\valheim_Data\Managed\UnityEngine.CoreModule.dll')" Text="UnityEngine.CoreModule.dll was not found under ValheimPath." />
+    <Error Condition="!Exists('$(ValheimPath)\valheim_Data\Managed\UnityEngine.PhysicsModule.dll')" Text="UnityEngine.PhysicsModule.dll was not found under ValheimPath." />
+  </Target>
+
+  <Target Name="DeployPlugin" AfterTargets="Build" Condition="'$(PluginDeployPath)' != ''">
+    <MakeDir Directories="$(PluginDeployPath)" />
+    <Copy SourceFiles="$(TargetPath)" DestinationFolder="$(PluginDeployPath)" />
+  </Target>
+
+</Project>
