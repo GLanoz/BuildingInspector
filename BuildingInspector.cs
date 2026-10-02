@@ -26,13 +26,15 @@ namespace BuildingInspector
         private static readonly List<Texture2D> IconTextures = new List<Texture2D>();
         private static Texture2D clothTexture;
         private static Sprite clothSprite;
-        private static ConfigEntry<KeyCode> tiltForwardKey;
-        private static ConfigEntry<KeyCode> tiltBackwardKey;
-        private static ConfigEntry<KeyCode> tiltLeftKey;
-        private static ConfigEntry<KeyCode> tiltRightKey;
+        private static ConfigEntry<KeyboardShortcut> tiltForwardKey;
+        private static ConfigEntry<KeyboardShortcut> tiltBackwardKey;
+        private static ConfigEntry<KeyboardShortcut> tiltLeftKey;
+        private static ConfigEntry<KeyboardShortcut> tiltRightKey;
+        private static ConfigEntry<KeyboardShortcut> resetTiltKey;
         private static ConfigEntry<float> tiltStepDegrees;
         private static ConfigEntry<float> maxTiltDegrees;
-        private static ConfigEntry<KeyCode> editNoteKey;
+        private static ConfigEntry<KeyboardShortcut> editNoteKey;
+        private static ConfigEntry<float> flagBlockRadius;
         private static readonly List<ConfigEntry<string>> labelNames = new List<ConfigEntry<string>>();
         private static readonly List<ConfigEntry<string>> labelDescriptions = new List<ConfigEntry<string>>();
         private static readonly List<ConfigEntry<string>> labelColors = new List<ConfigEntry<string>>();
@@ -48,13 +50,16 @@ namespace BuildingInspector
         private void Awake()
         {
             Logger.LogInfo("Building Inspector loading...");
-            tiltForwardKey = Config.Bind("Flag Rotation", "TiltForwardKey", KeyCode.I, "Tilt the flag forward.");
-            tiltBackwardKey = Config.Bind("Flag Rotation", "TiltBackwardKey", KeyCode.K, "Tilt the flag backward.");
-            tiltLeftKey = Config.Bind("Flag Rotation", "TiltLeftKey", KeyCode.J, "Tilt the flag to the left.");
-            tiltRightKey = Config.Bind("Flag Rotation", "TiltRightKey", KeyCode.L, "Tilt the flag to the right.");
+            tiltForwardKey = Config.Bind("Flag Rotation", "TiltForwardKey", new KeyboardShortcut(KeyCode.I), "Tilt the flag forward.");
+            tiltBackwardKey = Config.Bind("Flag Rotation", "TiltBackwardKey", new KeyboardShortcut(KeyCode.K), "Tilt the flag backward.");
+            tiltLeftKey = Config.Bind("Flag Rotation", "TiltLeftKey", new KeyboardShortcut(KeyCode.J), "Tilt the flag to the left.");
+            tiltRightKey = Config.Bind("Flag Rotation", "TiltRightKey", new KeyboardShortcut(KeyCode.L), "Tilt the flag to the right.");
+            resetTiltKey = Config.Bind("Flag Rotation", "ResetTiltKey", new KeyboardShortcut(KeyCode.Insert), "Reset the flag tilt.");
             tiltStepDegrees = Config.Bind("Flag Rotation", "TiltStepDegrees", 15f, "Tilt change per key press in degrees.");
             maxTiltDegrees = Config.Bind("Flag Rotation", "MaxTiltDegrees", 60f, "Maximum tilt angle in either direction.");
-            editNoteKey = Config.Bind("Flag Notes", "EditNoteKey", KeyCode.N, "Edit the note on the aimed inspection flag.");
+            editNoteKey = Config.Bind("Flag Notes", "EditNoteKey", new KeyboardShortcut(KeyCode.N), "Edit the note on the aimed inspection flag.");
+            flagBlockRadius = Config.Bind("Flag Placement", "BlockRadius", 0.2f,
+                new ConfigDescription("Minimum spacing between placed inspection flags in meters.", new AcceptableValueRange<float>(0.05f, 1f)));
             BindFlagVariants();
             noteInput = gameObject.AddComponent<FlagNoteReceiver>();
             new Harmony(PluginGUID).PatchAll(typeof(BuildingInspector).Assembly);
@@ -93,27 +98,60 @@ namespace BuildingInspector
                 flagVariants[index] = new FlagVariant($"Inspection Flag - {name}", description, prefabNames[index], color);
             }
 
-            ConfigEntry<bool> finishSlotMigrated = Config.Bind("Migrations", "FinishLabelMovedToSlot6", false,
-                "Internal migration marker. Do not change.");
-            if (!finishSlotMigrated.Value)
+            ConfigEntry<string> oldFinishName = Config.Bind("Flag Labels", "Label8Name", string.Empty, "Legacy setting; moved to Label6Name.");
+            ConfigEntry<string> oldFinishDescription = Config.Bind("Flag Labels", "Label8Description", string.Empty, "Legacy setting; moved to Label6Description.");
+            ConfigEntry<string> oldFinishColor = Config.Bind("Flag Labels", "Label8Color", string.Empty, "Legacy setting; moved to Label6Color.");
+            bool hasLegacyFinishSettings = !string.IsNullOrWhiteSpace(oldFinishName.Value) ||
+                !string.IsNullOrWhiteSpace(oldFinishDescription.Value) || !string.IsNullOrWhiteSpace(oldFinishColor.Value);
+            if (hasLegacyFinishSettings)
             {
-                ConfigEntry<string> oldFinishName = Config.Bind("Flag Labels", "Label8Name", "Finish", "Deprecated; moved to Label6Name.");
-                ConfigEntry<string> oldFinishDescription = Config.Bind("Flag Labels", "Label8Description", "Finishing work needs attention.", "Deprecated; moved to Label6Description.");
-                ConfigEntry<string> oldFinishColor = Config.Bind("Flag Labels", "Label8Color", "#F2F2F2", "Deprecated; moved to Label6Color.");
-
                 labelNames[5].Value = string.IsNullOrWhiteSpace(oldFinishName.Value) ? "Finish" : oldFinishName.Value;
-                labelDescriptions[5].Value = oldFinishDescription.Value ?? "Finishing work needs attention.";
-                labelColors[5].Value = oldFinishColor.Value ?? "#F2F2F2";
-                finishSlotMigrated.Value = true;
-                Config.Save();
+                labelDescriptions[5].Value = string.IsNullOrWhiteSpace(oldFinishDescription.Value)
+                    ? "Finishing work needs attention."
+                    : oldFinishDescription.Value;
+                labelColors[5].Value = string.IsNullOrWhiteSpace(oldFinishColor.Value) ? "#F2F2F2" : oldFinishColor.Value;
+                flagVariants[5] = CreateFlagVariant(5, prefabNames[5], defaultNames[5]);
+            }
 
-                Color migratedColor;
-                if (ColorUtility.TryParseHtmlString(labelColors[5].Value, out migratedColor))
+            foreach (string suffix in new[] { "Name", "Description", "Color" })
+            {
+                Config.Bind("Flag Labels", $"Label7{suffix}", string.Empty, "Legacy setting; no longer used.");
+            }
+            Config.Bind("Migrations", "FinishLabelMovedToSlot6", false, "Legacy setting; no longer used.");
+
+            bool removedLegacySettings = false;
+            foreach (int oldSlot in new[] { 7, 8 })
+            {
+                foreach (string suffix in new[] { "Name", "Description", "Color" })
                 {
-                    flagVariants[5] = new FlagVariant($"Inspection Flag - {labelNames[5].Value.Trim()}", labelDescriptions[5].Value,
-                        prefabNames[5], migratedColor);
+                    removedLegacySettings |= RemoveConfigSetting("Flag Labels", $"Label{oldSlot}{suffix}");
                 }
             }
+            removedLegacySettings |= RemoveConfigSetting("Migrations", "FinishLabelMovedToSlot6");
+
+            if (removedLegacySettings || hasLegacyFinishSettings)
+            {
+                Config.Save();
+            }
+        }
+
+        private FlagVariant CreateFlagVariant(int index, string prefabName, string defaultName)
+        {
+            Color color;
+            if (!ColorUtility.TryParseHtmlString(labelColors[index].Value, out color))
+            {
+                color = Color.white;
+                Logger.LogWarning($"Invalid color for Label{index + 1}Color; using white.");
+            }
+
+            string name = string.IsNullOrWhiteSpace(labelNames[index].Value) ? defaultName : labelNames[index].Value.Trim();
+            return new FlagVariant($"Inspection Flag - {name}", labelDescriptions[index].Value ?? string.Empty, prefabName, color);
+        }
+
+        private bool RemoveConfigSetting(string section, string key)
+        {
+            var definition = new ConfigDefinition(section, key);
+            return Config.Remove(definition);
         }
 
         private void RegisterInspectionFlag()
@@ -133,7 +171,7 @@ namespace BuildingInspector
 
         private void Update()
         {
-            if (editNoteKey == null || !Input.GetKeyDown(editNoteKey.Value) || TextInput.IsVisible())
+            if (editNoteKey == null || !editNoteKey.Value.IsDown() || TextInput.IsVisible())
             {
                 return;
             }
@@ -209,7 +247,7 @@ namespace BuildingInspector
             foreach (Piece flagPiece in blockingFlags)
             {
                 flagPiece.m_blockingPieces = blockingFlags;
-                flagPiece.m_blockRadius = 0.2f;
+                flagPiece.m_blockRadius = Mathf.Clamp(flagBlockRadius.Value, 0.05f, 1f);
             }
 
             return registeredCount;
@@ -406,23 +444,23 @@ namespace BuildingInspector
             if (forward.sqrMagnitude > 0.001f)
             {
                 Quaternion surfaceRotation = Quaternion.LookRotation(forward.normalized, hit.normal);
-                if (Input.GetKeyDown(tiltForwardKey.Value))
+                if (tiltForwardKey.Value.IsDown())
                 {
                     tiltX = Mathf.Clamp(tiltX + tiltStepDegrees.Value, -maxTiltDegrees.Value, maxTiltDegrees.Value);
                 }
-                if (Input.GetKeyDown(tiltBackwardKey.Value))
+                if (tiltBackwardKey.Value.IsDown())
                 {
                     tiltX = Mathf.Clamp(tiltX - tiltStepDegrees.Value, -maxTiltDegrees.Value, maxTiltDegrees.Value);
                 }
-                if (Input.GetKeyDown(tiltLeftKey.Value))
+                if (tiltLeftKey.Value.IsDown())
                 {
                     tiltZ = Mathf.Clamp(tiltZ - tiltStepDegrees.Value, -maxTiltDegrees.Value, maxTiltDegrees.Value);
                 }
-                if (Input.GetKeyDown(tiltRightKey.Value))
+                if (tiltRightKey.Value.IsDown())
                 {
                     tiltZ = Mathf.Clamp(tiltZ + tiltStepDegrees.Value, -maxTiltDegrees.Value, maxTiltDegrees.Value);
                 }
-                if (Input.GetKeyDown(KeyCode.Insert))
+                if (resetTiltKey.Value.IsDown())
                 {
                     tiltX = 0f;
                     tiltZ = 0f;

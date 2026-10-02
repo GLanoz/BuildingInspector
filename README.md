@@ -45,7 +45,7 @@ The build restores compile-time packages, writes `bin/Debug/net472/BuildingInspe
 2. Open the build menu and choose `Inspection`, then select one of the eight inspection labels.
 3. Aim at flat ground, a sloped roof, or a wall. The flag aligns to the targeted surface. Use the mouse wheel to rotate around the surface normal, or use `I`/`K` and `J`/`L` to adjust its tilt. `Insert` resets the tilt.
 4. Place the flag. All variants are free. Aim at a placed flag and press `N` to enter or update its note. Use the regular Hammer removal action to remove one.
-5. To change controls, tilt angles, labels, descriptions, or colors, edit `BepInEx/config/Lanoz.BuildingInspector.cfg`. Under `[Flag Labels]`, the active slots are 1–6; slots 7 and 8 are retired. On first launch, Finish's slot 8 settings are moved to slot 6 automatically. Colors use hex notation such as `#FF0000`. Restart the game after changing labels.
+5. To change controls and tilt angles, edit `[Flag Rotation]`; to change note and spacing settings, edit `[Flag Notes]` and `[Flag Placement]` in `BepInEx/config/Lanoz.BuildingInspector.cfg`. Under `[Flag Labels]`, edit the names, descriptions, and hex colors (`#FF0000`) for slots 1–6. Old Finish settings move from slot 8 to slot 6 automatically, and obsolete label entries are removed. Restart the game after changing labels.
 6. Check `BepInEx/LogOutput.log` in the active profile. The plugin logs `Building Inspector loading...`, `Inspection Flags registered: 6.`, and `Building Inspector loaded!`; registration errors include the cause.
 
 For multiplayer, install BepInEx, Jötunn, and this mod on the server and every connecting client.
