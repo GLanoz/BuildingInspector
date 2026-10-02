@@ -1,4 +1,4 @@
-# Building Inspector 0.1.9
+# Building Inspector 0.1.10
 
 A minimal BepInEx plugin for Valheim. It adds four free flags to Hammer → `Inspection`: red marks a problem, yellow marks something to review, green marks an inspected area, and blue marks another category. Rotate around the surface normal with the mouse wheel. Flags automatically align to the aimed surface; the pole extends slightly into the surface. Their cloth is rendered as a white runtime sprite tinted with the selected color. The mod does not scan or analyze buildings automatically.
 

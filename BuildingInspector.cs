@@ -297,9 +297,16 @@ namespace BuildingInspector
                 {
                     tiltZ = Mathf.Clamp(tiltZ + tiltStepDegrees.Value, -maxTiltDegrees.Value, maxTiltDegrees.Value);
                 }
+                if (Input.GetKeyDown(KeyCode.Insert))
+                {
+                    tiltX = 0f;
+                    tiltZ = 0f;
+                }
 
                 ghost.transform.rotation = surfaceRotation * Quaternion.Euler(tiltX, 0f, tiltZ);
-                ghost.transform.position -= hit.normal * 0.12f;
+                Vector3 ghostToSurface = ghost.transform.position - hit.point;
+                Vector3 tangentOffset = Vector3.ProjectOnPlane(ghostToSurface, hit.normal);
+                ghost.transform.position = hit.point + tangentOffset - hit.normal * 0.12f;
                 lastTiltedGhost = ghost;
                 lastGhostBaseRotation = surfaceRotation;
                 lastGhostRotation = ghost.transform.rotation;
