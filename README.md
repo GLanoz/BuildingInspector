@@ -1,6 +1,6 @@
 # Building Inspector 0.1.9
 
-A minimal BepInEx plugin for Valheim. It adds four free flags to Hammer → `Inspection`: red marks a problem, yellow marks something to review, green marks an inspected area, and blue marks another category. Rotate around the surface normal with the mouse wheel. Flags automatically align to the aimed surface; the round base is removed and the pole extends slightly into the surface. Their cloth is rendered as a white runtime sprite tinted with the selected color. The mod does not scan or analyze buildings automatically.
+A minimal BepInEx plugin for Valheim. It adds four free flags to Hammer → `Inspection`: red marks a problem, yellow marks something to review, green marks an inspected area, and blue marks another category. Rotate around the surface normal with the mouse wheel. Flags automatically align to the aimed surface; the pole extends slightly into the surface. Their cloth is rendered as a white runtime sprite tinted with the selected color. The mod does not scan or analyze buildings automatically.
 
 While a flag placement ghost is active, the default `I`/`K` keys tilt it forward/backward and `J`/`L` tilt it sideways. Each key press applies the configured tilt step, limited by the configured maximum angle. The bindings and angles can be changed in `BepInEx/config/Lanoz.BuildingInspector.cfg` under `[Flag Rotation]`.
 
