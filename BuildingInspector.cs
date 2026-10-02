@@ -17,7 +17,7 @@ namespace BuildingInspector
     {
         public const string PluginGUID = "Lanoz.BuildingInspector";
         public const string PluginName = "Building Inspector";
-        public const string PluginVersion = "0.1.9";
+        public const string PluginVersion = "0.1.10";
 
         private static readonly List<Texture2D> IconTextures = new List<Texture2D>();
         private static Texture2D clothTexture;
@@ -115,7 +115,7 @@ namespace BuildingInspector
                 throw new InvalidOperationException($"Jotunn could not create the {variant.PrefabName} prefab.");
             }
 
-            prefab.transform.localScale = Vector3.one * 0.65f;
+            prefab.transform.localScale = Vector3.one * 0.5f;
             prefab.AddComponent<Piece>();
 
             BoxCollider collider = prefab.GetComponent<BoxCollider>();
@@ -299,6 +299,7 @@ namespace BuildingInspector
                 }
 
                 ghost.transform.rotation = surfaceRotation * Quaternion.Euler(tiltX, 0f, tiltZ);
+                ghost.transform.position -= hit.normal * 0.12f;
                 lastTiltedGhost = ghost;
                 lastGhostBaseRotation = surfaceRotation;
                 lastGhostRotation = ghost.transform.rotation;
