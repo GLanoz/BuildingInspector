@@ -1,4 +1,5 @@
 using BepInEx;
+using BepInEx.Configuration;
 using System;
 using System.Collections.Generic;
 using System.Reflection;
@@ -16,23 +17,41 @@ namespace BuildingInspector
     {
         public const string PluginGUID = "Lanoz.BuildingInspector";
         public const string PluginName = "Building Inspector";
-        public const string PluginVersion = "0.1.8";
+        public const string PluginVersion = "0.1.9";
 
         private static readonly List<Texture2D> IconTextures = new List<Texture2D>();
         private static Texture2D clothTexture;
         private static Sprite clothSprite;
+        private static ConfigEntry<KeyCode> tiltForwardKey;
+        private static ConfigEntry<KeyCode> tiltBackwardKey;
+        private static ConfigEntry<KeyCode> tiltLeftKey;
+        private static ConfigEntry<KeyCode> tiltRightKey;
+        private static ConfigEntry<float> tiltStepDegrees;
+        private static ConfigEntry<float> maxTiltDegrees;
+        private static float tiltX;
+        private static float tiltZ;
+        private static GameObject lastTiltedGhost;
+        private static Quaternion lastGhostBaseRotation;
+        private static Quaternion lastGhostRotation;
+        private static bool hasLastGhostRotation;
 
         private static readonly FlagVariant[] FlagVariants =
         {
-            new FlagVariant("Inspection Flag - Problem", "Red flag: a building issue was found.", "InspectionFlagRed", "piece_banner04", new Color(0.98f, 0.18f, 0.12f)),
-            new FlagVariant("Inspection Flag - Review", "Yellow flag: this part of the building needs review.", "InspectionFlagYellow", "piece_banner08", new Color(1f, 0.88f, 0.08f)),
-            new FlagVariant("Inspection Flag - Verified", "Green flag: this part of the building was inspected.", "InspectionFlagGreen", "piece_banner05", new Color(0.12f, 0.9f, 0.2f)),
-            new FlagVariant("Inspection Flag - Other", "Blue flag: another inspection category.", "InspectionFlagBlue", "piece_banner02", new Color(0.12f, 0.5f, 1f))
+            new FlagVariant("Inspection Flag - Problem", "Red flag: a building issue was found.", "InspectionFlagRed", new Color(0.98f, 0.18f, 0.12f)),
+            new FlagVariant("Inspection Flag - Review", "Yellow flag: this part of the building needs review.", "InspectionFlagYellow", new Color(1f, 0.88f, 0.08f)),
+            new FlagVariant("Inspection Flag - Verified", "Green flag: this part of the building was inspected.", "InspectionFlagGreen", new Color(0.12f, 0.9f, 0.2f)),
+            new FlagVariant("Inspection Flag - Other", "Blue flag: another inspection category.", "InspectionFlagBlue", new Color(0.12f, 0.5f, 1f))
         };
 
         private void Awake()
         {
             Logger.LogInfo("Building Inspector loading...");
+            tiltForwardKey = Config.Bind("Flag Rotation", "TiltForwardKey", KeyCode.I, "Tilt the flag forward.");
+            tiltBackwardKey = Config.Bind("Flag Rotation", "TiltBackwardKey", KeyCode.K, "Tilt the flag backward.");
+            tiltLeftKey = Config.Bind("Flag Rotation", "TiltLeftKey", KeyCode.J, "Tilt the flag to the left.");
+            tiltRightKey = Config.Bind("Flag Rotation", "TiltRightKey", KeyCode.L, "Tilt the flag to the right.");
+            tiltStepDegrees = Config.Bind("Flag Rotation", "TiltStepDegrees", 15f, "Tilt change per key press in degrees.");
+            maxTiltDegrees = Config.Bind("Flag Rotation", "MaxTiltDegrees", 60f, "Maximum tilt angle in either direction.");
             new Harmony(PluginGUID).PatchAll(typeof(BuildingInspector).Assembly);
             PrefabManager.OnVanillaPrefabsAvailable += RegisterInspectionFlag;
         }
@@ -119,11 +138,8 @@ namespace BuildingInspector
             collider.center = new Vector3(0f, 0.68f, 0f);
             collider.size = new Vector3(0.55f, 1.4f, 0.16f);
 
-            AddPrimitive(prefab, PrimitiveType.Cylinder, "InspectionFlagBase",
-                new Vector3(0f, 0.04f, 0f), new Vector3(0.21f, 0.04f, 0.21f),
-                woodMaterial, pieceLayer);
             AddPrimitive(prefab, PrimitiveType.Cylinder, "InspectionFlagPole",
-                new Vector3(0f, 0.72f, 0f), new Vector3(0.027f, 0.68f, 0.027f),
+                new Vector3(0f, 0.58f, 0f), new Vector3(0.027f, 0.68f, 0.027f),
                 woodMaterial, pieceLayer);
             AddClothSprite(prefab, variant, pieceLayer);
 
@@ -219,6 +235,8 @@ namespace BuildingInspector
             GameObject ghost = AccessTools.Field(typeof(Player), "m_placementGhost").GetValue(player) as GameObject;
             if (!ghost || !ghost.name.StartsWith("InspectionFlag", StringComparison.Ordinal))
             {
+                lastTiltedGhost = null;
+                hasLastGhostRotation = false;
                 return;
             }
 
@@ -240,7 +258,21 @@ namespace BuildingInspector
                 return;
             }
 
-            Vector3 forward = Vector3.ProjectOnPlane(ghost.transform.forward, hit.normal);
+            bool isNewGhost = ghost != lastTiltedGhost;
+            if (isNewGhost)
+            {
+                tiltX = 0f;
+                tiltZ = 0f;
+                hasLastGhostRotation = false;
+            }
+
+            Quaternion currentRotation = ghost.transform.rotation;
+            Quaternion baseRotation = !isNewGhost && hasLastGhostRotation &&
+                Quaternion.Angle(currentRotation, lastGhostRotation) < 0.1f
+                ? lastGhostBaseRotation
+                : currentRotation;
+
+            Vector3 forward = Vector3.ProjectOnPlane(baseRotation * Vector3.forward, hit.normal);
             if (forward.sqrMagnitude < 0.001f)
             {
                 forward = Vector3.ProjectOnPlane(camera.transform.forward, hit.normal);
@@ -248,23 +280,30 @@ namespace BuildingInspector
 
             if (forward.sqrMagnitude > 0.001f)
             {
-                ghost.transform.rotation = Quaternion.LookRotation(forward.normalized, hit.normal);
-            }
-        }
+                Quaternion surfaceRotation = Quaternion.LookRotation(forward.normalized, hit.normal);
+                if (Input.GetKeyDown(tiltForwardKey.Value))
+                {
+                    tiltX = Mathf.Clamp(tiltX + tiltStepDegrees.Value, -maxTiltDegrees.Value, maxTiltDegrees.Value);
+                }
+                if (Input.GetKeyDown(tiltBackwardKey.Value))
+                {
+                    tiltX = Mathf.Clamp(tiltX - tiltStepDegrees.Value, -maxTiltDegrees.Value, maxTiltDegrees.Value);
+                }
+                if (Input.GetKeyDown(tiltLeftKey.Value))
+                {
+                    tiltZ = Mathf.Clamp(tiltZ - tiltStepDegrees.Value, -maxTiltDegrees.Value, maxTiltDegrees.Value);
+                }
+                if (Input.GetKeyDown(tiltRightKey.Value))
+                {
+                    tiltZ = Mathf.Clamp(tiltZ + tiltStepDegrees.Value, -maxTiltDegrees.Value, maxTiltDegrees.Value);
+                }
 
-        private static Material CreateTintedMaterial(Material source, Color tint)
-        {
-            Material material = new Material(source);
-            if (material.HasProperty("_Color"))
-            {
-                material.color = tint;
+                ghost.transform.rotation = surfaceRotation * Quaternion.Euler(tiltX, 0f, tiltZ);
+                lastTiltedGhost = ghost;
+                lastGhostBaseRotation = surfaceRotation;
+                lastGhostRotation = ghost.transform.rotation;
+                hasLastGhostRotation = true;
             }
-            else if (material.HasProperty("_BaseColor"))
-            {
-                material.SetColor("_BaseColor", tint);
-            }
-
-            return material;
         }
 
         private static Sprite CreateFlagIcon(Color flagColor, string iconName)
@@ -305,16 +344,13 @@ namespace BuildingInspector
             public string DisplayName { get; }
             public string Description { get; }
             public string PrefabName { get; }
-            public string BannerPrefabName { get; }
             public Color Color { get; }
 
-            public FlagVariant(string displayName, string description, string prefabName,
-                string bannerPrefabName, Color color)
+            public FlagVariant(string displayName, string description, string prefabName, Color color)
             {
                 DisplayName = displayName;
                 Description = description;
                 PrefabName = prefabName;
-                BannerPrefabName = bannerPrefabName;
                 Color = color;
             }
         }

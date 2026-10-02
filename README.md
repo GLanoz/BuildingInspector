@@ -1,6 +1,8 @@
-# Building Inspector 0.1.8
+# Building Inspector 0.1.9
 
-A minimal BepInEx plugin for Valheim. It adds four free flags to Hammer → `Inspection`: red marks a problem, yellow marks something to review, green marks an inspected area, and blue marks another category. Rotate around the vertical axis with the mouse wheel. While aiming at a surface, each flag automatically aligns to it: flat ground keeps it upright, while sloped roofs and walls tilt it to match. Flag cloth uses a runtime white sprite tinted with the selected variant color. The mod does not scan or analyze buildings automatically.
+A minimal BepInEx plugin for Valheim. It adds four free flags to Hammer → `Inspection`: red marks a problem, yellow marks something to review, green marks an inspected area, and blue marks another category. Rotate around the surface normal with the mouse wheel. Flags automatically align to the aimed surface; the round base is removed and the pole extends slightly into the surface. Their cloth is rendered as a white runtime sprite tinted with the selected color. The mod does not scan or analyze buildings automatically.
+
+While a flag placement ghost is active, the default `I`/`K` keys tilt it forward/backward and `J`/`L` tilt it sideways. Each key press applies the configured tilt step, limited by the configured maximum angle. The bindings and angles can be changed in `BepInEx/config/Lanoz.BuildingInspector.cfg` under `[Flag Rotation]`.
 
 ## Requirements
 
@@ -41,9 +43,10 @@ The build restores compile-time packages, writes `bin/Debug/net472/BuildingInspe
 
 1. Launch Valheim through Thunderstore/r2modman with the profile containing BepInEx, Jötunn, and Building Inspector. Enter a world and equip the regular Hammer.
 2. Open the build menu and choose `Inspection`, then select `Inspection Flag - Problem`, `Inspection Flag - Review`, `Inspection Flag - Verified`, or `Inspection Flag - Other`.
-3. Aim at flat ground, a sloped roof, or a wall. The flag aligns to the targeted surface; use the mouse wheel to rotate it around that surface normal.
+3. Aim at flat ground, a sloped roof, or a wall. The flag aligns to the targeted surface. Use the mouse wheel to rotate around the surface normal, or use `I`/`K` and `J`/`L` to adjust its tilt. `Insert` resets the tilt.
 4. Place the flag. All four variants are free. Use the regular Hammer removal action to remove one.
-5. Check `BepInEx/LogOutput.log` in the active profile. The plugin logs `Building Inspector loading...`, `Inspection Flags registered: 4.`, and `Building Inspector loaded!`; registration errors include the cause.
+5. To change controls or tilt angles, edit `BepInEx/config/Lanoz.BuildingInspector.cfg` under `[Flag Rotation]`.
+6. Check `BepInEx/LogOutput.log` in the active profile. The plugin logs `Building Inspector loading...`, `Inspection Flags registered: 4.`, and `Building Inspector loaded!`; registration errors include the cause.
 
 For multiplayer, install BepInEx, Jötunn, and this mod on the server and every connecting client.
 
