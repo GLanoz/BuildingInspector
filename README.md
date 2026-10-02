@@ -1,9 +1,14 @@
-# Building Inspector 0.1.7
+# Building Inspector 0.1.8
 
-A minimal BepInEx plugin for Valheim. It adds four free flags to Hammer → `Inspection`: red marks a problem, yellow marks something to review, green marks an inspected area, and blue marks another category. Rotate around the vertical axis with the mouse wheel. While a flag placement ghost is active, use `PageUp`/`PageDown` to tilt it forward or backward, `Home`/`End` to tilt it sideways, and `Insert` to reset it upright. Flags are built from Unity primitives at runtime; no external AssetBundle is required. The mod does not scan or analyze buildings automatically.
+A minimal BepInEx plugin for Valheim. It adds four free flags to Hammer → `Inspection`: red marks a problem, yellow marks something to review, green marks an inspected area, and blue marks another category. Rotate around the vertical axis with the mouse wheel. While aiming at a surface, each flag automatically aligns to it: flat ground keeps it upright, while sloped roofs and walls tilt it to match. Flag cloth uses a runtime white sprite tinted with the selected variant color. The mod does not scan or analyze buildings automatically.
 
 ## Requirements
 
+- Valheim for Windows.
+- An active Thunderstore/r2modman profile with BepInExPack Valheim and Jötunn 2.30.2 or a compatible newer release.
+- The .NET SDK for `dotnet build`.
+- NuGet packages `BepInEx.Core 5.4.21` and `JotunnLib 2.30.2`, restored from the sources configured in `NuGet.Config`.
+- Valheim assemblies for compilation: `Assembly-CSharp.dll`, `assembly_valheim.dll`, `assembly_utils.dll`, `UnityEngine.CoreModule.dll`, and `UnityEngine.PhysicsModule.dll`.
 
 The plugin uses Jötunn's `CustomPiece(GameObject, bool, PieceConfig)`, `PieceManager.Instance.AddPiece`, `PrefabManager.Instance.CreateEmptyPrefab`, and `PrefabManager.Cache.GetPrefab` APIs. Each generated prefab has a persistent `ZNetView`, so placed flags are saved with the world and can be removed with the regular Hammer.
 
@@ -36,10 +41,15 @@ The build restores compile-time packages, writes `bin/Debug/net472/BuildingInspe
 
 1. Launch Valheim through Thunderstore/r2modman with the profile containing BepInEx, Jötunn, and Building Inspector. Enter a world and equip the regular Hammer.
 2. Open the build menu and choose `Inspection`, then select `Inspection Flag - Problem`, `Inspection Flag - Review`, `Inspection Flag - Verified`, or `Inspection Flag - Other`.
-3. Rotate with the mouse wheel. Tilt with `PageUp`/`PageDown` or `Home`/`End`; press `Insert` to reset upright. Each tilt step is 15 degrees, up to 60 degrees in either direction.
+3. Aim at flat ground, a sloped roof, or a wall. The flag aligns to the targeted surface; use the mouse wheel to rotate it around that surface normal.
 4. Place the flag. All four variants are free. Use the regular Hammer removal action to remove one.
 5. Check `BepInEx/LogOutput.log` in the active profile. The plugin logs `Building Inspector loading...`, `Inspection Flags registered: 4.`, and `Building Inspector loaded!`; registration errors include the cause.
 
 For multiplayer, install BepInEx, Jötunn, and this mod on the server and every connecting client.
 
 ## API References
+
+- [Jötunn: Pieces and PieceTables](https://valheim-modding.github.io/Jotunn/tutorials/pieces.html)
+- [Jötunn: CustomPiece](https://valheim-modding.github.io/Jotunn/api/Jotunn.Entities.CustomPiece.html)
+- [Jötunn: PieceManager](https://valheim-modding.github.io/Jotunn/api/Jotunn.Managers.PieceManager.html)
+- [Jötunn releases](https://github.com/Valheim-Modding/Jotunn/releases)

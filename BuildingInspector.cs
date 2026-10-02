@@ -1,6 +1,7 @@
 using BepInEx;
 using System;
 using System.Collections.Generic;
+using System.Reflection;
 using HarmonyLib;
 using Jotunn.Configs;
 using Jotunn.Entities;
@@ -15,15 +16,11 @@ namespace BuildingInspector
     {
         public const string PluginGUID = "Lanoz.BuildingInspector";
         public const string PluginName = "Building Inspector";
-        public const string PluginVersion = "0.1.7";
+        public const string PluginVersion = "0.1.8";
 
         private static readonly List<Texture2D> IconTextures = new List<Texture2D>();
-        private static float flagTiltX;
-        private static float flagTiltZ;
-        private static GameObject lastTiltedGhost;
-        private static Quaternion lastGhostBaseRotation;
-        private static Quaternion lastGhostRotation;
-        private static bool hasLastGhostRotation;
+        private static Texture2D clothTexture;
+        private static Sprite clothSprite;
 
         private static readonly FlagVariant[] FlagVariants =
         {
@@ -70,18 +67,13 @@ namespace BuildingInspector
                 throw new InvalidOperationException("Could not find the Piece component on vanilla wood_pole.");
             }
 
-            Material woodMaterial = CreateTintedMaterial(sourceRenderer.sharedMaterial, new Color(0.72f, 0.55f, 0.34f));
-            GameObject whiteBannerSource = PrefabManager.Cache.GetPrefab<GameObject>("piece_banner11");
-            Renderer whiteBannerRenderer = whiteBannerSource ? whiteBannerSource.GetComponentInChildren<Renderer>() : null;
-            Material fallbackClothMaterial = whiteBannerRenderer && whiteBannerRenderer.sharedMaterial
-                ? whiteBannerRenderer.sharedMaterial
-                : sourceRenderer.sharedMaterial;
+            Material woodMaterial = sourceRenderer.sharedMaterial;
             int pieceLayer = LayerMask.NameToLayer("piece");
             int registeredCount = 0;
 
             foreach (FlagVariant variant in FlagVariants)
             {
-                if (AddInspectionFlag(variant, woodMaterial, fallbackClothMaterial, sourcePiece.m_placeEffect, pieceLayer))
+                if (AddInspectionFlag(variant, woodMaterial, sourcePiece.m_placeEffect, pieceLayer))
                 {
                     registeredCount++;
                 }
@@ -96,7 +88,7 @@ namespace BuildingInspector
         }
 
         private bool AddInspectionFlag(FlagVariant variant, Material woodMaterial,
-            Material fallbackClothMaterial, EffectList placeEffect, int pieceLayer)
+            EffectList placeEffect, int pieceLayer)
         {
             GameObject prefab = PrefabManager.Instance.CreateEmptyPrefab(variant.PrefabName, true);
             if (!prefab)
@@ -133,21 +125,7 @@ namespace BuildingInspector
             AddPrimitive(prefab, PrimitiveType.Cylinder, "InspectionFlagPole",
                 new Vector3(0f, 0.72f, 0f), new Vector3(0.027f, 0.68f, 0.027f),
                 woodMaterial, pieceLayer);
-            GameObject bannerSource = PrefabManager.Cache.GetPrefab<GameObject>(variant.BannerPrefabName);
-            Renderer bannerRenderer = bannerSource ? bannerSource.GetComponentInChildren<Renderer>() : null;
-            Material clothMaterial = bannerRenderer && bannerRenderer.sharedMaterial
-                ? new Material(bannerRenderer.sharedMaterial)
-                : CreateTintedMaterial(fallbackClothMaterial, variant.Color);
-            MaterialPropertyBlock clothProperties = null;
-            if (bannerRenderer)
-            {
-                clothProperties = new MaterialPropertyBlock();
-                bannerRenderer.GetPropertyBlock(clothProperties);
-            }
-
-            AddPrimitive(prefab, PrimitiveType.Cube, "InspectionFlagCloth",
-                new Vector3(0.2f, 1.15f, 0f), new Vector3(0.39f, 0.24f, 0.027f),
-                clothMaterial, pieceLayer, clothProperties);
+            AddClothSprite(prefab, variant, pieceLayer);
 
             var config = new PieceConfig
             {
@@ -177,8 +155,7 @@ namespace BuildingInspector
         }
 
         private static void AddPrimitive(GameObject parent, PrimitiveType type, string name,
-            Vector3 localPosition, Vector3 localScale, Material material, int pieceLayer,
-            MaterialPropertyBlock materialProperties = null)
+            Vector3 localPosition, Vector3 localScale, Material material, int pieceLayer)
         {
             GameObject part = GameObject.CreatePrimitive(type);
             part.name = name;
@@ -201,66 +178,78 @@ namespace BuildingInspector
             if (renderer)
             {
                 renderer.sharedMaterial = material;
-                if (materialProperties != null)
-                {
-                    renderer.SetPropertyBlock(materialProperties);
-                }
             }
         }
 
-        private static void UpdateFlagTilt(Player player)
+        private static void AddClothSprite(GameObject parent, FlagVariant variant, int pieceLayer)
+        {
+            if (!clothTexture)
+            {
+                const int textureSize = 4;
+                clothTexture = new Texture2D(textureSize, textureSize, TextureFormat.RGBA32, false);
+                Color32[] pixels = new Color32[textureSize * textureSize];
+                for (int index = 0; index < pixels.Length; index++)
+                {
+                    pixels[index] = new Color32(255, 255, 255, 255);
+                }
+
+                clothTexture.SetPixels32(pixels);
+                clothTexture.Apply(false, true);
+                clothSprite = Sprite.Create(clothTexture, new Rect(0f, 0f, textureSize, textureSize),
+                    new Vector2(0.5f, 0.5f), textureSize);
+                clothSprite.name = "InspectionFlagClothSprite";
+            }
+
+            GameObject cloth = new GameObject("InspectionFlagCloth");
+            cloth.transform.SetParent(parent.transform, false);
+            cloth.transform.localPosition = new Vector3(0.2f, 1.15f, 0f);
+            cloth.transform.localScale = new Vector3(0.39f, 0.24f, 1f);
+            if (pieceLayer >= 0)
+            {
+                cloth.layer = pieceLayer;
+            }
+
+            SpriteRenderer spriteRenderer = cloth.AddComponent<SpriteRenderer>();
+            spriteRenderer.sprite = clothSprite;
+            spriteRenderer.color = variant.Color;
+        }
+
+        private static void AlignFlagToSurface(Player player)
         {
             GameObject ghost = AccessTools.Field(typeof(Player), "m_placementGhost").GetValue(player) as GameObject;
             if (!ghost || !ghost.name.StartsWith("InspectionFlag", StringComparison.Ordinal))
             {
-                lastTiltedGhost = null;
-                hasLastGhostRotation = false;
                 return;
             }
 
-            bool isNewGhost = ghost != lastTiltedGhost;
-            if (isNewGhost)
+            Camera camera = Camera.main;
+            if (!camera)
             {
-                flagTiltX = 0f;
-                flagTiltZ = 0f;
-                hasLastGhostRotation = false;
+                return;
             }
 
-            Quaternion currentRotation = ghost.transform.rotation;
-            Quaternion baseRotation = !isNewGhost && hasLastGhostRotation &&
-                Quaternion.Angle(currentRotation, lastGhostRotation) < 0.1f
-                ? lastGhostBaseRotation
-                : currentRotation;
+            Ray ray = camera.ScreenPointToRay(new Vector3(Screen.width * 0.5f, Screen.height * 0.5f));
+            FieldInfo placeRayMaskField = AccessTools.Field(typeof(Player), "m_placeRayMask");
+            int placeRayMask = placeRayMaskField != null
+                ? (int)placeRayMaskField.GetValue(player)
+                : Physics.DefaultRaycastLayers;
 
-            const float tiltStep = 15f;
-            const float maxTilt = 60f;
-            if (ZInput.GetKeyDown(KeyCode.PageUp, false))
+            if (!Physics.Raycast(ray, out RaycastHit hit, 50f, placeRayMask, QueryTriggerInteraction.Ignore) ||
+                Vector3.Distance(hit.point, ghost.transform.position) > 1.75f)
             {
-                flagTiltX = Mathf.Clamp(flagTiltX + tiltStep, -maxTilt, maxTilt);
-            }
-            if (ZInput.GetKeyDown(KeyCode.PageDown, false))
-            {
-                flagTiltX = Mathf.Clamp(flagTiltX - tiltStep, -maxTilt, maxTilt);
-            }
-            if (ZInput.GetKeyDown(KeyCode.Home, false))
-            {
-                flagTiltZ = Mathf.Clamp(flagTiltZ - tiltStep, -maxTilt, maxTilt);
-            }
-            if (ZInput.GetKeyDown(KeyCode.End, false))
-            {
-                flagTiltZ = Mathf.Clamp(flagTiltZ + tiltStep, -maxTilt, maxTilt);
-            }
-            if (ZInput.GetKeyDown(KeyCode.Insert, false))
-            {
-                flagTiltX = 0f;
-                flagTiltZ = 0f;
+                return;
             }
 
-            ghost.transform.rotation = baseRotation * Quaternion.Euler(flagTiltX, 0f, flagTiltZ);
-            lastTiltedGhost = ghost;
-            lastGhostBaseRotation = baseRotation;
-            lastGhostRotation = ghost.transform.rotation;
-            hasLastGhostRotation = true;
+            Vector3 forward = Vector3.ProjectOnPlane(ghost.transform.forward, hit.normal);
+            if (forward.sqrMagnitude < 0.001f)
+            {
+                forward = Vector3.ProjectOnPlane(camera.transform.forward, hit.normal);
+            }
+
+            if (forward.sqrMagnitude > 0.001f)
+            {
+                ghost.transform.rotation = Quaternion.LookRotation(forward.normalized, hit.normal);
+            }
         }
 
         private static Material CreateTintedMaterial(Material source, Color tint)
@@ -336,7 +325,7 @@ namespace BuildingInspector
             [HarmonyPostfix]
             private static void Postfix(Player __instance)
             {
-                UpdateFlagTilt(__instance);
+                AlignFlagToSurface(__instance);
             }
         }
     }
