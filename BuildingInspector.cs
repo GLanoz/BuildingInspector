@@ -1,5 +1,6 @@
 using BepInEx;
 using BepInEx.Configuration;
+using BepInEx.Logging;
 using System;
 using System.Collections.Generic;
 using System.Reflection;
@@ -17,12 +18,13 @@ namespace BuildingInspector
     {
         public const string PluginGUID = "Lanoz.BuildingInspector";
         public const string PluginName = "Building Inspector";
-        public const string PluginVersion = "0.2.3";
+        public const string PluginVersion = "0.2.4";
 
         private const int FlagVariantCount = 6;
         private const string NoteRpcName = "BuildingInspector_SetFlagNote";
         private const string NoteZdoKey = "BuildingInspector_FlagNote";
 
+        private static ManualLogSource log;
         private static readonly List<Texture2D> IconTextures = new List<Texture2D>();
         private static readonly List<FlagNoteReceiver> FlagReceivers = new List<FlagNoteReceiver>();
         private static Texture2D clothTexture;
@@ -50,6 +52,7 @@ namespace BuildingInspector
 
         private void Awake()
         {
+            log = Logger;
             Logger.LogInfo("Building Inspector loading...");
             tiltForwardKey = Config.Bind("Flag Rotation", "TiltForwardKey", new KeyboardShortcut(KeyCode.I), "Tilt the flag forward.");
             tiltBackwardKey = Config.Bind("Flag Rotation", "TiltBackwardKey", new KeyboardShortcut(KeyCode.K), "Tilt the flag backward.");
@@ -536,12 +539,13 @@ namespace BuildingInspector
             public void Open(ZNetView target)
             {
                 nview = target;
-                if (!nview || nview.GetZDO() == null || !TextInput.instance || Player.m_localPlayer == null)
+                Piece piece = nview ? nview.GetComponent<Piece>() : null;
+                if (!nview || nview.GetZDO() == null || !TextInput.instance || !piece)
                 {
                     return;
                 }
 
-                if (GetCreatorId() == Player.m_localPlayer.GetPlayerID())
+                if (piece.IsCreator())
                 {
                     TextInput.instance.RequestText(this, "Inspection flag note", 160);
                 }
@@ -569,8 +573,8 @@ namespace BuildingInspector
                 }
 
                 long creatorId = GetCreatorId();
-                bool canEdit = nview && nview.GetZDO() != null && Player.m_localPlayer != null &&
-                    creatorId != 0L && creatorId == Player.m_localPlayer.GetPlayerID();
+                bool canEdit = nview && nview.GetZDO() != null && piece &&
+                    creatorId != 0L && piece.IsCreator();
                 return canEdit
                     ? text + $"\nPress [<color=yellow><b>{editNoteKey.Value}</b></color>] to edit note"
                     : text + "\n<color=#AAAAAA>Only the player who placed this flag can edit its note.</color>";
@@ -589,27 +593,37 @@ namespace BuildingInspector
 
             public void SetText(string text)
             {
-                long creatorId = GetCreatorId();
-                if (nview && nview.GetZDO() != null && Player.m_localPlayer != null &&
-                    creatorId != 0L && creatorId == Player.m_localPlayer.GetPlayerID())
+                Piece piece = nview ? nview.GetComponent<Piece>() : null;
+                if (nview && nview.GetZDO() != null && piece && piece.IsCreator())
                 {
+                    log.LogInfo($"Submitting note update for flag {nview.GetZDO().m_uid}; creator={GetCreatorId()}.");
                     nview.InvokeRPC(NoteRpcName, (text ?? string.Empty).Trim());
                 }
             }
 
             private void SetNoteRpc(long sender, string text)
             {
-                if (nview && nview.IsOwner() && nview.GetZDO() != null &&
-                    IsSenderPlayer(sender, GetCreatorId()))
+                Piece piece = nview ? nview.GetComponent<Piece>() : null;
+                long creatorId = GetCreatorId();
+                ZNetPeer peer = ZNet.instance ? ZNet.instance.GetPeer(sender) : null;
+                bool isOwner = nview && nview.IsOwner();
+                bool validSender = piece && IsSenderPlayer(sender, piece, creatorId);
+                log.LogInfo($"Received note update for flag {(nview && nview.GetZDO() != null ? nview.GetZDO().m_uid.ToString() : "unknown")}; sender={sender}, senderPlayer={(peer != null ? peer.m_playerID.ToString() : "unknown")}, creator={creatorId}, owner={isOwner}, authorized={validSender}.");
+
+                if (isOwner && nview.GetZDO() != null && validSender)
                 {
                     nview.GetZDO().Set(NoteZdoKey, text ?? string.Empty);
+                }
+                else
+                {
+                    log.LogWarning("Rejected inspection flag note update.");
                 }
             }
         }
 
-        private static bool IsSenderPlayer(long sender, long playerId)
+        private static bool IsSenderPlayer(long sender, Piece piece, long playerId)
         {
-            if (playerId == 0L || !ZNet.instance)
+            if (!piece || playerId == 0L || !ZNet.instance)
             {
                 return false;
             }
@@ -617,11 +631,33 @@ namespace BuildingInspector
             ZNetPeer peer = ZNet.instance.GetPeer(sender);
             if (peer != null)
             {
-                return peer.m_playerID == playerId;
+                return peer.m_playerID == playerId || IsCreatorPlatformUser(peer, piece);
             }
 
-            return ZNet.instance.IsServer() && Player.m_localPlayer != null &&
-                Player.m_localPlayer.GetPlayerID() == playerId;
+            return sender == ZNet.GetUID() && piece.IsCreator();
+        }
+
+        private static bool IsCreatorPlatformUser(ZNetPeer peer, Piece piece)
+        {
+            World world = ZNet.instance ? ZNet.instance.GetWorld() : null;
+            int creatorIndex = piece.GetCreatorPlatformUserIdIndex();
+            if (peer == null || world == null || creatorIndex < 0 ||
+                creatorIndex >= world.m_playerHistory.Count)
+            {
+                return false;
+            }
+
+            Splatform.PlatformUserID creatorPlatformId = world.m_playerHistory[creatorIndex].m_id;
+            foreach (ZNet.PlayerInfo playerInfo in ZNet.instance.GetPlayerList())
+            {
+                if (playerInfo.m_characterID.Equals(peer.m_characterID) &&
+                    playerInfo.m_userInfo.m_id == creatorPlatformId)
+                {
+                    return true;
+                }
+            }
+
+            return false;
         }
 
         [HarmonyPatch(typeof(Player), "Start")]
