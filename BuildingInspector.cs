@@ -18,7 +18,7 @@ namespace BuildingInspector
     {
         public const string PluginGUID = "Lanoz.BuildingInspector";
         public const string PluginName = "Building Inspector";
-        public const string PluginVersion = "0.2.4";
+        public const string PluginVersion = "0.2.5";
 
         private const int FlagVariantCount = 6;
         private const string NoteRpcName = "BuildingInspector_SetFlagNote";
@@ -133,16 +133,44 @@ namespace BuildingInspector
             }
 
             Ray ray = camera.ScreenPointToRay(new Vector3(Screen.width * 0.5f, Screen.height * 0.5f));
-            if (!Physics.Raycast(ray, out RaycastHit hit, 6f, Physics.DefaultRaycastLayers, QueryTriggerInteraction.Ignore))
+            float cameraOffset = Player.m_localPlayer
+                ? Vector3.Distance(camera.transform.position, Player.m_localPlayer.transform.position)
+                : 0f;
+            float maxDistance = 6f + cameraOffset;
+            RaycastHit[] hits = Physics.RaycastAll(ray, maxDistance, Physics.DefaultRaycastLayers, QueryTriggerInteraction.Ignore);
+            Array.Sort(hits, (first, second) => first.distance.CompareTo(second.distance));
+            foreach (RaycastHit hit in hits)
             {
-                return;
+                FlagNoteReceiver receiver = hit.collider.GetComponentInParent<FlagNoteReceiver>();
+                if (receiver)
+                {
+                    noteInput.Open(receiver.GetComponent<ZNetView>());
+                    return;
+                }
+
+                if (BlocksNoteRay(hit.collider))
+                {
+                    return;
+                }
+            }
+        }
+
+        private static bool BlocksNoteRay(Collider collider)
+        {
+            if (!collider)
+            {
+                return false;
             }
 
-            FlagNoteReceiver receiver = hit.collider.GetComponentInParent<FlagNoteReceiver>();
-            if (receiver)
+            if (collider.GetComponentInParent<Piece>() || collider.GetComponentInParent<WearNTear>() ||
+                collider.GetComponentInParent<Heightmap>() || collider.GetComponentInParent<Character>() ||
+                collider.GetComponentInParent<TreeLog>())
             {
-                noteInput.Open(receiver.GetComponent<ZNetView>());
+                return true;
             }
+
+            TreeBase tree = collider.GetComponentInParent<TreeBase>();
+            return tree && collider.gameObject == tree.gameObject;
         }
 
         private int AddInspectionFlags()
