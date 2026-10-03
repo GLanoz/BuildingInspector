@@ -17,14 +17,11 @@ namespace BuildingInspector
     {
         public const string PluginGUID = "Lanoz.BuildingInspector";
         public const string PluginName = "Building Inspector";
-        public const string PluginVersion = "0.2.2";
+        public const string PluginVersion = "0.2.3";
 
         private const int FlagVariantCount = 6;
         private const string NoteRpcName = "BuildingInspector_SetFlagNote";
-        private const string OwnerRpcName = "BuildingInspector_SetFlagOwner";
         private const string NoteZdoKey = "BuildingInspector_FlagNote";
-        private const string OwnerZdoKey = "BuildingInspector_FlagOwner";
-        private const string OwnerPeerZdoKey = "BuildingInspector_FlagOwnerPeer";
 
         private static readonly List<Texture2D> IconTextures = new List<Texture2D>();
         private static readonly List<FlagNoteReceiver> FlagReceivers = new List<FlagNoteReceiver>();
@@ -494,7 +491,6 @@ namespace BuildingInspector
                 if (nview)
                 {
                     nview.Register<string>(NoteRpcName, SetNoteRpc);
-                    nview.Register<long, long>(OwnerRpcName, SetOwnerRpc);
                 }
 
                 ApplyPlayerCollisionIgnores();
@@ -545,23 +541,16 @@ namespace BuildingInspector
                     return;
                 }
 
-                long ownerId = nview.GetZDO().GetLong(OwnerZdoKey, 0L);
-                long playerId = Player.m_localPlayer.GetPlayerID();
-                if (ownerId == 0L)
+                if (GetCreatorId() == Player.m_localPlayer.GetPlayerID())
                 {
-                    SetPlacer(playerId, ZNet.instance ? ZNet.GetUID() : 0L);
-                    ownerId = nview.GetZDO().GetLong(OwnerZdoKey, 0L);
-                }
-
-                if (ownerId == playerId)
-                {
-                    if (nview.GetZDO().GetLong(OwnerPeerZdoKey, 0L) == 0L && ZNet.instance)
-                    {
-                        SetPlacer(playerId, ZNet.GetUID());
-                    }
-
                     TextInput.instance.RequestText(this, "Inspection flag note", 160);
                 }
+            }
+
+            private long GetCreatorId()
+            {
+                Piece piece = nview ? nview.GetComponent<Piece>() : null;
+                return piece ? piece.GetCreator() : 0L;
             }
 
             public string GetText()
@@ -579,8 +568,9 @@ namespace BuildingInspector
                     text += $"\n<color=#FFE080>Note:</color> {note}";
                 }
 
+                long creatorId = GetCreatorId();
                 bool canEdit = nview && nview.GetZDO() != null && Player.m_localPlayer != null &&
-                    nview.GetZDO().GetLong(OwnerZdoKey, 0L) == Player.m_localPlayer.GetPlayerID();
+                    creatorId != 0L && creatorId == Player.m_localPlayer.GetPlayerID();
                 return canEdit
                     ? text + $"\nPress [<color=yellow><b>{editNoteKey.Value}</b></color>] to edit note"
                     : text + "\n<color=#AAAAAA>Only the player who placed this flag can edit its note.</color>";
@@ -599,8 +589,9 @@ namespace BuildingInspector
 
             public void SetText(string text)
             {
+                long creatorId = GetCreatorId();
                 if (nview && nview.GetZDO() != null && Player.m_localPlayer != null &&
-                    nview.GetZDO().GetLong(OwnerZdoKey, 0L) == Player.m_localPlayer.GetPlayerID())
+                    creatorId != 0L && creatorId == Player.m_localPlayer.GetPlayerID())
                 {
                     nview.InvokeRPC(NoteRpcName, (text ?? string.Empty).Trim());
                 }
@@ -609,45 +600,28 @@ namespace BuildingInspector
             private void SetNoteRpc(long sender, string text)
             {
                 if (nview && nview.IsOwner() && nview.GetZDO() != null &&
-                    sender == nview.GetZDO().GetLong(OwnerPeerZdoKey, 0L))
+                    IsSenderPlayer(sender, GetCreatorId()))
                 {
                     nview.GetZDO().Set(NoteZdoKey, text ?? string.Empty);
                 }
             }
+        }
 
-            public void SetPlacer(long playerId, long peerId)
+        private static bool IsSenderPlayer(long sender, long playerId)
+        {
+            if (playerId == 0L || !ZNet.instance)
             {
-                if (nview && nview.GetZDO() != null && playerId != 0L && peerId != 0L)
-                {
-                    if (nview.IsOwner())
-                    {
-                        long currentOwnerId = nview.GetZDO().GetLong(OwnerZdoKey, 0L);
-                        if (currentOwnerId == 0L || currentOwnerId == playerId)
-                        {
-                            nview.GetZDO().Set(OwnerZdoKey, playerId);
-                            nview.GetZDO().Set(OwnerPeerZdoKey, peerId);
-                        }
-                    }
-                    else
-                    {
-                        nview.InvokeRPC(OwnerRpcName, playerId, peerId);
-                    }
-                }
+                return false;
             }
 
-            private void SetOwnerRpc(long sender, long playerId, long peerId)
+            ZNetPeer peer = ZNet.instance.GetPeer(sender);
+            if (peer != null)
             {
-                if (nview && nview.IsOwner() && nview.GetZDO() != null && playerId != 0L &&
-                    peerId != 0L && sender == peerId)
-                {
-                    long currentOwnerId = nview.GetZDO().GetLong(OwnerZdoKey, 0L);
-                    if (currentOwnerId == 0L || currentOwnerId == playerId)
-                    {
-                        nview.GetZDO().Set(OwnerZdoKey, playerId);
-                        nview.GetZDO().Set(OwnerPeerZdoKey, peerId);
-                    }
-                }
+                return peer.m_playerID == playerId;
             }
+
+            return ZNet.instance.IsServer() && Player.m_localPlayer != null &&
+                Player.m_localPlayer.GetPlayerID() == playerId;
         }
 
         [HarmonyPatch(typeof(Player), "Start")]
@@ -664,63 +638,6 @@ namespace BuildingInspector
                     }
                 }
             }
-        }
-
-        [HarmonyPatch]
-        private static class PlayerPlaceFlagPatch
-        {
-            private static MethodBase TargetMethod()
-            {
-                return AccessTools.Method(typeof(Player), "PlacePiece");
-            }
-
-            [HarmonyPostfix]
-            private static void Postfix(Player __instance, object[] __args)
-            {
-                if (__instance == null || __args == null)
-                {
-                    return;
-                }
-
-                Piece placedPiece = null;
-                foreach (object argument in __args)
-                {
-                    placedPiece = argument as Piece;
-                    if (placedPiece)
-                    {
-                        break;
-                    }
-                }
-
-                if (!placedPiece || !IsInspectionFlag(placedPiece))
-                {
-                    return;
-                }
-
-                FlagNoteReceiver receiver = placedPiece.GetComponent<FlagNoteReceiver>();
-                if (receiver && ZNet.instance)
-                {
-                    receiver.SetPlacer(__instance.GetPlayerID(), ZNet.GetUID());
-                }
-            }
-        }
-
-        private static bool IsInspectionFlag(Piece piece)
-        {
-            if (!piece)
-            {
-                return false;
-            }
-
-            foreach (FlagVariant variant in flagVariants ?? Array.Empty<FlagVariant>())
-            {
-                if (piece.gameObject.name.StartsWith(variant.PrefabName, StringComparison.Ordinal))
-                {
-                    return true;
-                }
-            }
-
-            return false;
         }
 
         [HarmonyPatch(typeof(Player), "UpdatePlacementGhost")]
