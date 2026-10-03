@@ -17,13 +17,17 @@ namespace BuildingInspector
     {
         public const string PluginGUID = "Lanoz.BuildingInspector";
         public const string PluginName = "Building Inspector";
-        public const string PluginVersion = "0.2.1";
+        public const string PluginVersion = "0.2.2";
 
         private const int FlagVariantCount = 6;
         private const string NoteRpcName = "BuildingInspector_SetFlagNote";
+        private const string OwnerRpcName = "BuildingInspector_SetFlagOwner";
         private const string NoteZdoKey = "BuildingInspector_FlagNote";
+        private const string OwnerZdoKey = "BuildingInspector_FlagOwner";
+        private const string OwnerPeerZdoKey = "BuildingInspector_FlagOwnerPeer";
 
         private static readonly List<Texture2D> IconTextures = new List<Texture2D>();
+        private static readonly List<FlagNoteReceiver> FlagReceivers = new List<FlagNoteReceiver>();
         private static Texture2D clothTexture;
         private static Sprite clothSprite;
         private static ConfigEntry<KeyboardShortcut> tiltForwardKey;
@@ -98,60 +102,6 @@ namespace BuildingInspector
                 flagVariants[index] = new FlagVariant($"Inspection Flag - {name}", description, prefabNames[index], color);
             }
 
-            ConfigEntry<string> oldFinishName = Config.Bind("Flag Labels", "Label8Name", string.Empty, "Legacy setting; moved to Label6Name.");
-            ConfigEntry<string> oldFinishDescription = Config.Bind("Flag Labels", "Label8Description", string.Empty, "Legacy setting; moved to Label6Description.");
-            ConfigEntry<string> oldFinishColor = Config.Bind("Flag Labels", "Label8Color", string.Empty, "Legacy setting; moved to Label6Color.");
-            bool hasLegacyFinishSettings = !string.IsNullOrWhiteSpace(oldFinishName.Value) ||
-                !string.IsNullOrWhiteSpace(oldFinishDescription.Value) || !string.IsNullOrWhiteSpace(oldFinishColor.Value);
-            if (hasLegacyFinishSettings)
-            {
-                labelNames[5].Value = string.IsNullOrWhiteSpace(oldFinishName.Value) ? "Finish" : oldFinishName.Value;
-                labelDescriptions[5].Value = string.IsNullOrWhiteSpace(oldFinishDescription.Value)
-                    ? "Finishing work needs attention."
-                    : oldFinishDescription.Value;
-                labelColors[5].Value = string.IsNullOrWhiteSpace(oldFinishColor.Value) ? "#F2F2F2" : oldFinishColor.Value;
-                flagVariants[5] = CreateFlagVariant(5, prefabNames[5], defaultNames[5]);
-            }
-
-            foreach (string suffix in new[] { "Name", "Description", "Color" })
-            {
-                Config.Bind("Flag Labels", $"Label7{suffix}", string.Empty, "Legacy setting; no longer used.");
-            }
-            Config.Bind("Migrations", "FinishLabelMovedToSlot6", false, "Legacy setting; no longer used.");
-
-            bool removedLegacySettings = false;
-            foreach (int oldSlot in new[] { 7, 8 })
-            {
-                foreach (string suffix in new[] { "Name", "Description", "Color" })
-                {
-                    removedLegacySettings |= RemoveConfigSetting("Flag Labels", $"Label{oldSlot}{suffix}");
-                }
-            }
-            removedLegacySettings |= RemoveConfigSetting("Migrations", "FinishLabelMovedToSlot6");
-
-            if (removedLegacySettings || hasLegacyFinishSettings)
-            {
-                Config.Save();
-            }
-        }
-
-        private FlagVariant CreateFlagVariant(int index, string prefabName, string defaultName)
-        {
-            Color color;
-            if (!ColorUtility.TryParseHtmlString(labelColors[index].Value, out color))
-            {
-                color = Color.white;
-                Logger.LogWarning($"Invalid color for Label{index + 1}Color; using white.");
-            }
-
-            string name = string.IsNullOrWhiteSpace(labelNames[index].Value) ? defaultName : labelNames[index].Value.Trim();
-            return new FlagVariant($"Inspection Flag - {name}", labelDescriptions[index].Value ?? string.Empty, prefabName, color);
-        }
-
-        private bool RemoveConfigSetting(string section, string key)
-        {
-            var definition = new ConfigDefinition(section, key);
-            return Config.Remove(definition);
         }
 
         private void RegisterInspectionFlag()
@@ -287,6 +237,7 @@ namespace BuildingInspector
 
             collider.center = new Vector3(0f, 0.68f, 0f);
             collider.size = new Vector3(0.55f, 1.4f, 0.16f);
+            collider.isTrigger = false;
 
             AddPrimitive(visuals, PrimitiveType.Cylinder, "InspectionFlagPole",
                 new Vector3(0f, 0.58f, 0f), new Vector3(0.027f, 0.68f, 0.027f),
@@ -390,7 +341,9 @@ namespace BuildingInspector
 
             SpriteRenderer spriteRenderer = cloth.AddComponent<SpriteRenderer>();
             spriteRenderer.sprite = clothSprite;
-            spriteRenderer.color = variant.Color;
+            Color clothColor = variant.Color;
+            clothColor.a = Mathf.Min(clothColor.a, 0.5f);
+            spriteRenderer.color = clothColor;
         }
 
         private static void AlignFlagToSurface(Player player)
@@ -532,18 +485,81 @@ namespace BuildingInspector
 
             private void Awake()
             {
+                if (!FlagReceivers.Contains(this))
+                {
+                    FlagReceivers.Add(this);
+                }
+
                 nview = GetComponent<ZNetView>();
                 if (nview)
                 {
                     nview.Register<string>(NoteRpcName, SetNoteRpc);
+                    nview.Register<long, long>(OwnerRpcName, SetOwnerRpc);
+                }
+
+                ApplyPlayerCollisionIgnores();
+            }
+
+            private void OnDestroy()
+            {
+                FlagReceivers.Remove(this);
+            }
+
+            public void IgnoreCollisionWith(Player player)
+            {
+                if (!player)
+                {
+                    return;
+                }
+
+                Collider flagCollider = GetComponent<Collider>();
+                if (!flagCollider)
+                {
+                    return;
+                }
+
+                Collider[] playerColliders = player.GetComponentsInChildren<Collider>();
+                foreach (Collider playerCollider in playerColliders)
+                {
+                    if (playerCollider && playerCollider != flagCollider)
+                    {
+                        Physics.IgnoreCollision(flagCollider, playerCollider, true);
+                    }
+                }
+            }
+
+            private void ApplyPlayerCollisionIgnores()
+            {
+                Player[] players = FindObjectsOfType<Player>();
+                foreach (Player player in players)
+                {
+                    IgnoreCollisionWith(player);
                 }
             }
 
             public void Open(ZNetView target)
             {
                 nview = target;
-                if (nview && TextInput.instance)
+                if (!nview || nview.GetZDO() == null || !TextInput.instance || Player.m_localPlayer == null)
                 {
+                    return;
+                }
+
+                long ownerId = nview.GetZDO().GetLong(OwnerZdoKey, 0L);
+                long playerId = Player.m_localPlayer.GetPlayerID();
+                if (ownerId == 0L)
+                {
+                    SetPlacer(playerId, ZNet.instance ? ZNet.GetUID() : 0L);
+                    ownerId = nview.GetZDO().GetLong(OwnerZdoKey, 0L);
+                }
+
+                if (ownerId == playerId)
+                {
+                    if (nview.GetZDO().GetLong(OwnerPeerZdoKey, 0L) == 0L && ZNet.instance)
+                    {
+                        SetPlacer(playerId, ZNet.GetUID());
+                    }
+
                     TextInput.instance.RequestText(this, "Inspection flag note", 160);
                 }
             }
@@ -563,7 +579,11 @@ namespace BuildingInspector
                     text += $"\n<color=#FFE080>Note:</color> {note}";
                 }
 
-                return text + $"\n[<color=yellow><b>{editNoteKey.Value}</b></color>] Edit note";
+                bool canEdit = nview && nview.GetZDO() != null && Player.m_localPlayer != null &&
+                    nview.GetZDO().GetLong(OwnerZdoKey, 0L) == Player.m_localPlayer.GetPlayerID();
+                return canEdit
+                    ? text + $"\nPress [<color=yellow><b>{editNoteKey.Value}</b></color>] to edit note"
+                    : text + "\n<color=#AAAAAA>Only the player who placed this flag can edit its note.</color>";
             }
 
             public string GetHoverName()
@@ -579,7 +599,8 @@ namespace BuildingInspector
 
             public void SetText(string text)
             {
-                if (nview && nview.GetZDO() != null)
+                if (nview && nview.GetZDO() != null && Player.m_localPlayer != null &&
+                    nview.GetZDO().GetLong(OwnerZdoKey, 0L) == Player.m_localPlayer.GetPlayerID())
                 {
                     nview.InvokeRPC(NoteRpcName, (text ?? string.Empty).Trim());
                 }
@@ -587,11 +608,119 @@ namespace BuildingInspector
 
             private void SetNoteRpc(long sender, string text)
             {
-                if (nview && nview.IsOwner() && nview.GetZDO() != null)
+                if (nview && nview.IsOwner() && nview.GetZDO() != null &&
+                    sender == nview.GetZDO().GetLong(OwnerPeerZdoKey, 0L))
                 {
                     nview.GetZDO().Set(NoteZdoKey, text ?? string.Empty);
                 }
             }
+
+            public void SetPlacer(long playerId, long peerId)
+            {
+                if (nview && nview.GetZDO() != null && playerId != 0L && peerId != 0L)
+                {
+                    if (nview.IsOwner())
+                    {
+                        long currentOwnerId = nview.GetZDO().GetLong(OwnerZdoKey, 0L);
+                        if (currentOwnerId == 0L || currentOwnerId == playerId)
+                        {
+                            nview.GetZDO().Set(OwnerZdoKey, playerId);
+                            nview.GetZDO().Set(OwnerPeerZdoKey, peerId);
+                        }
+                    }
+                    else
+                    {
+                        nview.InvokeRPC(OwnerRpcName, playerId, peerId);
+                    }
+                }
+            }
+
+            private void SetOwnerRpc(long sender, long playerId, long peerId)
+            {
+                if (nview && nview.IsOwner() && nview.GetZDO() != null && playerId != 0L &&
+                    peerId != 0L && sender == peerId)
+                {
+                    long currentOwnerId = nview.GetZDO().GetLong(OwnerZdoKey, 0L);
+                    if (currentOwnerId == 0L || currentOwnerId == playerId)
+                    {
+                        nview.GetZDO().Set(OwnerZdoKey, playerId);
+                        nview.GetZDO().Set(OwnerPeerZdoKey, peerId);
+                    }
+                }
+            }
+        }
+
+        [HarmonyPatch(typeof(Player), "Start")]
+        private static class PlayerStartFlagCollisionPatch
+        {
+            [HarmonyPostfix]
+            private static void Postfix(Player __instance)
+            {
+                foreach (FlagNoteReceiver receiver in FlagReceivers)
+                {
+                    if (receiver)
+                    {
+                        receiver.IgnoreCollisionWith(__instance);
+                    }
+                }
+            }
+        }
+
+        [HarmonyPatch]
+        private static class PlayerPlaceFlagPatch
+        {
+            private static MethodBase TargetMethod()
+            {
+                return AccessTools.Method(typeof(Player), "PlacePiece");
+            }
+
+            [HarmonyPostfix]
+            private static void Postfix(Player __instance, object[] __args)
+            {
+                if (__instance == null || __args == null)
+                {
+                    return;
+                }
+
+                Piece placedPiece = null;
+                foreach (object argument in __args)
+                {
+                    placedPiece = argument as Piece;
+                    if (placedPiece)
+                    {
+                        break;
+                    }
+                }
+
+                if (!placedPiece || !IsInspectionFlag(placedPiece))
+                {
+                    return;
+                }
+
+                FlagNoteReceiver receiver = placedPiece.GetComponent<FlagNoteReceiver>();
+                if (receiver && ZNet.instance)
+                {
+                    receiver.SetPlacer(__instance.GetPlayerID(), ZNet.GetUID());
+                }
+            }
+        }
+
+        private static bool IsInspectionFlag(Piece piece)
+        {
+            if (!piece)
+            {
+                return false;
+            }
+
+            foreach (FlagVariant variant in flagVariants ?? Array.Empty<FlagVariant>())
+            {
+                if (piece.gameObject.name.StartsWith(variant.PrefabName, StringComparison.Ordinal))
+                {
+                    return true;
+                }
+            }
+
+            return false;
         }
 
         [HarmonyPatch(typeof(Player), "UpdatePlacementGhost")]
