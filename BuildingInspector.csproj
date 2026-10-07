@@ -37,6 +37,11 @@
       <Private>false</Private>
     </Reference>
 
+    <Reference Include="UnityEngine.UI">
+      <HintPath>$(ValheimPath)\valheim_Data\Managed\UnityEngine.UI.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+
     <PackageReference Include="BepInEx.Core" Version="5.4.21" />
     <PackageReference Include="JotunnLib" Version="2.30.2" />
   </ItemGroup>

@@ -9,6 +9,8 @@ using Jotunn.Configs;
 using Jotunn.Entities;
 using Jotunn.Managers;
 using UnityEngine;
+using UnityEngine.EventSystems;
+using UnityEngine.UI;
 
 namespace BuildingInspector
 {
@@ -18,11 +20,17 @@ namespace BuildingInspector
     {
         public const string PluginGUID = "Lanoz.BuildingInspector";
         public const string PluginName = "Building Inspector";
-        public const string PluginVersion = "0.2.6";
+        public const string PluginVersion = "0.3.0";
 
         private const int FlagVariantCount = 6;
+        private const int MaxNoteLength = 160;
+        private const int MaxNoteLines = 5;
         private const string NoteRpcName = "BuildingInspector_SetFlagNote";
         private const string NoteZdoKey = "BuildingInspector_FlagNote";
+        private const string ChangeCategoryRpcName = "BuildingInspector_ChangeFlagCategory";
+        private const string FlagCategoryZdoKey = "BuildingInspector_FlagCategory";
+        private const string CreatorNameZdoKey = "BuildingInspector_FlagCreatorName";
+        private const string MultiplayerWorldGlobalKey = "BuildingInspector_MultiplayerWorld";
 
         private static ManualLogSource log;
         private static readonly List<Texture2D> IconTextures = new List<Texture2D>();
@@ -43,11 +51,25 @@ namespace BuildingInspector
         private static readonly List<ConfigEntry<string>> labelColors = new List<ConfigEntry<string>>();
         private static FlagVariant[] flagVariants;
         private static FlagVariant testFlagVariant;
-        private static FlagNoteReceiver noteInput;
         private static float tiltX;
         private static float tiltZ;
         private static float surfaceWheelRotation;
         private static GameObject lastTiltedGhost;
+        private static bool flagEditorOpen;
+        private static bool flagEditorInputBlocked;
+        private static bool flagEditorInputUnblockPending;
+        private static int flagEditorUnblockFrame;
+        private static FlagNoteReceiver flagEditorTarget;
+        private static GameObject flagEditorCanvas;
+        private static GameObject flagEditorPanel;
+        private static InputField flagEditorNoteField;
+        private static Button[] flagEditorCategoryButtons;
+        private static Image[] flagEditorCategoryButtonImages;
+        private static string originalNote;
+        private static int originalCategory;
+        private static int draftCategory;
+        private static CursorLockMode editorPreviousCursorLock;
+        private static bool editorPreviousCursorVisible;
 
         private void Awake()
         {
@@ -61,10 +83,14 @@ namespace BuildingInspector
             tiltStepDegrees = Config.Bind("Flag Rotation", "TiltStepDegrees", 15f, "Tilt change per key press in degrees.");
             maxTiltDegrees = Config.Bind("Flag Rotation", "MaxTiltDegrees", 60f, "Maximum tilt angle in either direction.");
             editNoteKey = Config.Bind("Flag Notes", "EditNoteKey", new KeyboardShortcut(KeyCode.N), "Edit the note on the aimed inspection flag.");
+            if (Config.Remove(new ConfigDefinition("Flag Categories", "ChangeCategoryKey")))
+            {
+                Config.Save();
+            }
+
             flagBlockRadius = Config.Bind("Flag Placement", "BlockRadius", 0.2f,
                 new ConfigDescription("Minimum spacing between placed inspection flags in meters.", new AcceptableValueRange<float>(0.05f, 1f)));
             BindFlagVariants();
-            noteInput = gameObject.AddComponent<FlagNoteReceiver>();
             new Harmony(PluginGUID).PatchAll(typeof(BuildingInspector).Assembly);
             PrefabManager.OnVanillaPrefabsAvailable += RegisterInspectionFlag;
         }
@@ -79,7 +105,7 @@ namespace BuildingInspector
                 "Structural work needs attention.", "Finishing work needs attention."
             };
             string[] defaultColors = { "#FA2E1F", "#FFE014", "#1FE633", "#1F80FF", "#A64DFF", "#F2F2F2" };
-            string[] prefabNames = { "InspectionFlagRed", "InspectionFlagYellow", "InspectionFlagGreen", "InspectionFlagBlue", "InspectionFlagCustom5", "InspectionFlagCustom8" };
+            string[] prefabNames = { "InspectionFlagRed", "InspectionFlagYellow", "InspectionFlagGreen", "InspectionFlagBlue", "InspectionFlagPurple", "InspectionFlagWhite" };
             flagVariants = new FlagVariant[FlagVariantCount];
 
             for (int index = 0; index < FlagVariantCount; index++)
@@ -138,7 +164,29 @@ namespace BuildingInspector
 
         private void Update()
         {
-            if (editNoteKey == null || !editNoteKey.Value.IsDown() || TextInput.IsVisible())
+            if (flagEditorOpen)
+            {
+                if (!flagEditorTarget || !flagEditorTarget.CanEditCategory() || Input.GetKeyDown(KeyCode.Escape))
+                {
+                    CloseFlagEditor();
+                }
+                return;
+            }
+
+            if (flagEditorInputUnblockPending)
+            {
+                if (Time.frameCount <= flagEditorUnblockFrame || Input.GetMouseButton(0) || Input.GetMouseButton(1))
+                {
+                    return;
+                }
+
+                GUIManager.BlockInput(false);
+                flagEditorInputBlocked = false;
+                flagEditorInputUnblockPending = false;
+            }
+
+            if (!editNoteKey.Value.IsDown() || TextInput.IsVisible() || InventoryGui.IsVisible() ||
+                Menu.IsVisible() || Console.IsVisible() || StoreGui.IsVisible() || Minimap.IsOpen())
             {
                 return;
             }
@@ -161,7 +209,12 @@ namespace BuildingInspector
                 FlagNoteReceiver receiver = hit.collider.GetComponentInParent<FlagNoteReceiver>();
                 if (receiver)
                 {
-                    noteInput.Open(receiver.GetComponent<ZNetView>());
+                    if (!receiver.CanEditCategory())
+                    {
+                        return;
+                    }
+
+                    OpenFlagEditor(receiver);
                     return;
                 }
 
@@ -169,6 +222,313 @@ namespace BuildingInspector
                 {
                     return;
                 }
+            }
+        }
+
+        private void LateUpdate()
+        {
+            if (!flagEditorInputBlocked)
+            {
+                return;
+            }
+
+            Cursor.lockState = CursorLockMode.None;
+            Cursor.visible = true;
+
+            Player localPlayer = Player.m_localPlayer;
+            if (localPlayer)
+            {
+                localPlayer.SetControls(Vector3.zero, false, false, false, false, false, false,
+                    false, false, false, false, false);
+                localPlayer.SetMoveDir(Vector3.zero);
+                localPlayer.StopMovement();
+            }
+        }
+
+        private void OpenFlagEditor(FlagNoteReceiver receiver)
+        {
+            if (!receiver || !receiver.CanEditCategory() || !EnsureFlagEditorUi())
+            {
+                return;
+            }
+
+            flagEditorTarget = receiver;
+            originalNote = receiver.GetText();
+            originalCategory = receiver.GetEditorCategoryIndex();
+            draftCategory = originalCategory;
+            flagEditorNoteField.text = originalNote;
+            UpdateFlagEditorCategorySelection();
+            flagEditorCanvas.SetActive(true);
+            flagEditorOpen = true;
+            flagEditorInputBlocked = true;
+            editorPreviousCursorLock = Cursor.lockState;
+            editorPreviousCursorVisible = Cursor.visible;
+            Cursor.lockState = CursorLockMode.None;
+            Cursor.visible = true;
+            GUIManager.BlockInput(true);
+
+            EventSystem eventSystem = EventSystem.current;
+            if (eventSystem)
+            {
+                eventSystem.SetSelectedGameObject(flagEditorNoteField.gameObject);
+            }
+
+            flagEditorNoteField.ActivateInputField();
+        }
+
+        private bool EnsureFlagEditorUi()
+        {
+            if (flagEditorCanvas)
+            {
+                return true;
+            }
+
+            GUIManager gui = GUIManager.Instance;
+            GameObject customGui = GUIManager.CustomGUIFront;
+            if (gui == null || !customGui)
+            {
+                return false;
+            }
+
+            flagEditorCanvas = new GameObject("BuildingInspectorFlagEditor", typeof(RectTransform));
+            flagEditorCanvas.transform.SetParent(customGui.transform, false);
+            RectTransform rootRect = flagEditorCanvas.GetComponent<RectTransform>();
+            rootRect.anchorMin = Vector2.zero;
+            rootRect.anchorMax = Vector2.one;
+            rootRect.offsetMin = Vector2.zero;
+            rootRect.offsetMax = Vector2.zero;
+            flagEditorCanvas.SetActive(false);
+
+            GameObject backdropObject = new GameObject("Backdrop", typeof(RectTransform), typeof(Image));
+            backdropObject.transform.SetParent(flagEditorCanvas.transform, false);
+            RectTransform backdropRect = backdropObject.GetComponent<RectTransform>();
+            backdropRect.anchorMin = Vector2.zero;
+            backdropRect.anchorMax = Vector2.one;
+            backdropRect.offsetMin = Vector2.zero;
+            backdropRect.offsetMax = Vector2.zero;
+            Image backdrop = backdropObject.GetComponent<Image>();
+            backdrop.color = new Color(0f, 0f, 0f, 0.58f);
+            backdrop.raycastTarget = true;
+
+            flagEditorPanel = gui.CreateWoodpanel(flagEditorCanvas.transform, new Vector2(0.5f, 0.5f),
+                new Vector2(0.5f, 0.5f), Vector2.zero, 740f, 560f, false);
+            RectTransform panelRect = flagEditorPanel.GetComponent<RectTransform>();
+            panelRect.SetAsLastSibling();
+
+            CreateEditorText(gui, "INSPECTION FLAG", flagEditorPanel.transform, new Vector2(0f, 238f),
+                new Vector2(650f, 40f), 30, TextAnchor.MiddleCenter, new Color(1f, 0.55f, 0.15f));
+            CreateEditorText(gui, "Note", flagEditorPanel.transform, new Vector2(0, 185f),
+                new Vector2(620f, 28f), 22, TextAnchor.MiddleLeft, Color.white);
+
+            GameObject inputObject = gui.CreateInputField(flagEditorPanel.transform,
+                new Vector2(0.5f, 0.5f), new Vector2(0.5f, 0.5f), new Vector2(0f, 98f),
+                InputField.ContentType.Standard, "Add an inspection note...", 18, 630f, 125f);
+            flagEditorNoteField = inputObject.GetComponent<InputField>();
+            flagEditorNoteField.onValidateInput += ValidateNoteInput;
+            flagEditorNoteField.lineType = InputField.LineType.MultiLineNewline;
+            flagEditorNoteField.characterLimit = 0;
+            flagEditorNoteField.text = string.Empty;
+            flagEditorNoteField.textComponent.alignment = TextAnchor.UpperLeft;
+            flagEditorNoteField.textComponent.horizontalOverflow = HorizontalWrapMode.Wrap;
+            flagEditorNoteField.textComponent.verticalOverflow = VerticalWrapMode.Overflow;
+
+            CreateEditorText(gui, "Category", flagEditorPanel.transform, new Vector2(0, 10f),
+                new Vector2(620f, 28f), 22, TextAnchor.MiddleLeft, Color.white);
+            flagEditorCategoryButtons = new Button[FlagVariantCount];
+            flagEditorCategoryButtonImages = new Image[FlagVariantCount];
+            for (int index = 0; index < FlagVariantCount; index++)
+            {
+                int row = index / 3;
+                int column = index % 3;
+                Vector2 position = new Vector2((column - 1) * 222f, -55f - row * 75f);
+                GameObject buttonObject = gui.CreateButton(string.Empty, flagEditorPanel.transform,
+                    new Vector2(0.5f, 0.5f), new Vector2(0.5f, 0.5f), position, 210f, 62f);
+                Button button = buttonObject.GetComponent<Button>();
+                Image buttonImage = buttonObject.GetComponent<Image>();
+                button.transition = Selectable.Transition.None;
+                flagEditorCategoryButtons[index] = button;
+                flagEditorCategoryButtonImages[index] = buttonImage;
+                int categoryIndex = index;
+                button.onClick.AddListener(() => SetDraftCategory(categoryIndex));
+
+                GameObject iconObject = new GameObject("FlagIcon", typeof(RectTransform), typeof(Image));
+                iconObject.transform.SetParent(buttonObject.transform, false);
+                RectTransform iconRect = iconObject.GetComponent<RectTransform>();
+                iconRect.anchorMin = new Vector2(0f, 0.5f);
+                iconRect.anchorMax = new Vector2(0f, 0.5f);
+                iconRect.pivot = new Vector2(0f, 0.5f);
+                iconRect.anchoredPosition = new Vector2(8f, 0f);
+                iconRect.sizeDelta = new Vector2(45f, 45f);
+                Image icon = iconObject.GetComponent<Image>();
+                icon.sprite = flagVariants[index].Icon;
+                icon.preserveAspect = true;
+                icon.raycastTarget = false;
+
+                string categoryName = string.IsNullOrWhiteSpace(labelNames[index].Value)
+                    ? $"Category {index + 1}"
+                    : labelNames[index].Value.Trim();
+                CreateEditorText(gui, categoryName, buttonObject.transform, new Vector2(25f, 0f),
+                    new Vector2(135f, 52f), 16, TextAnchor.MiddleCenter, new Color(1f, 0.55f, 0.15f));
+            }
+
+            GameObject saveObject = gui.CreateButton("Save", flagEditorPanel.transform,
+                new Vector2(0.5f, 0.5f), new Vector2(0.5f, 0.5f), new Vector2(100f, -230f), 180f, 48f);
+            saveObject.GetComponent<Button>().onClick.AddListener(SaveFlagEditor);
+            GameObject cancelObject = gui.CreateButton("Cancel", flagEditorPanel.transform,
+                new Vector2(0.5f, 0.5f), new Vector2(0.5f, 0.5f), new Vector2(-100f, -230f), 180f, 48f);
+            cancelObject.GetComponent<Button>().onClick.AddListener(CloseFlagEditor);
+            UpdateFlagEditorCategorySelection();
+            return true;
+        }
+
+        private static void CreateEditorText(GUIManager gui, string text, Transform parent, Vector2 position,
+            Vector2 size, int fontSize, TextAnchor alignment, Color color)
+        {
+            GameObject textObject = gui.CreateText(text, parent, new Vector2(0.5f, 0.5f),
+                new Vector2(0.5f, 0.5f), position, gui.AveriaSerif, fontSize, Color.white,
+                true, Color.black, size.x, size.y, false);
+            Text label = textObject.GetComponent<Text>();
+            label.alignment = alignment;
+            label.color = color;
+            label.raycastTarget = false;
+        }
+
+        private static void SetDraftCategory(int categoryIndex)
+        {
+            if (categoryIndex < 0 || categoryIndex >= FlagVariantCount)
+            {
+                return;
+            }
+
+            draftCategory = categoryIndex;
+            UpdateFlagEditorCategorySelection();
+        }
+
+        private static void UpdateFlagEditorCategorySelection()
+        {
+            if (flagEditorCategoryButtons == null)
+            {
+                return;
+            }
+
+            for (int index = 0; index < flagEditorCategoryButtons.Length; index++)
+            {
+                bool selected = index == draftCategory;
+                Image image = flagEditorCategoryButtonImages[index];
+                if (image)
+                {
+                    image.color = selected ? new Color(0.62f, 0.43f, 0.2f, 1f) : Color.white;
+                }
+
+                flagEditorCategoryButtons[index].interactable = true;
+            }
+        }
+
+        private static string LimitNoteLength(string text)
+        {
+            if (string.IsNullOrEmpty(text))
+            {
+                return string.Empty;
+            }
+
+            int characterCount = 0;
+            System.Text.StringBuilder result = new System.Text.StringBuilder(text.Length);
+
+            foreach (char character in text)
+            {
+                if (character == '\r' || character == '\n')
+                {
+                    result.Append(character);
+                    continue;
+                }
+
+                if (characterCount >= MaxNoteLength)
+                {
+                    continue;
+                }
+
+                characterCount++;
+                result.Append(character);
+            }
+
+            return result.ToString();
+        }
+        private static void SaveFlagEditor()
+        {
+            if (!flagEditorTarget || !flagEditorTarget.CanEditCategory())
+            {
+                CloseFlagEditor();
+                return;
+            }
+
+            string note = LimitNoteLength((flagEditorNoteField.text ?? string.Empty).Trim());
+            if (!string.Equals(note, originalNote, StringComparison.Ordinal))
+            {
+                flagEditorTarget.SetText(note);
+            }
+
+            if (draftCategory != originalCategory)
+            {
+                flagEditorTarget.RequestCategoryChange(draftCategory);
+            }
+
+            CloseFlagEditor();
+        }
+
+        private static void CloseFlagEditor()
+        {
+            if (!flagEditorOpen)
+            {
+                return;
+            }
+
+            flagEditorOpen = false;
+            flagEditorTarget = null;
+            if (flagEditorCanvas)
+            {
+                flagEditorCanvas.SetActive(false);
+            }
+
+            flagEditorInputUnblockPending = true;
+            flagEditorUnblockFrame = Time.frameCount;
+            Cursor.lockState = editorPreviousCursorLock;
+            Cursor.visible = editorPreviousCursorVisible;
+            originalNote = string.Empty;
+            originalCategory = -1;
+            draftCategory = -1;
+        }
+
+        private static bool ShouldShowInspectedBy()
+        {
+            ZoneSystem zoneSystem = ZoneSystem.instance;
+            if (zoneSystem && zoneSystem.GetGlobalKey(MultiplayerWorldGlobalKey))
+            {
+                return true;
+            }
+
+            ZNet net = ZNet.instance;
+            if (!net)
+            {
+                return false;
+            }
+
+            if (net.IsServer() && ZNet.IsOpenServer())
+            {
+                MarkMultiplayerWorldIfNeeded(net);
+                return true;
+            }
+
+            bool connectedClient = !net.IsServer() && net.GetServerPeer() != null;
+            return connectedClient && zoneSystem && zoneSystem.GetGlobalKey(MultiplayerWorldGlobalKey);
+        }
+
+        private static void MarkMultiplayerWorldIfNeeded(ZNet net)
+        {
+            ZoneSystem zoneSystem = ZoneSystem.instance;
+            if (zoneSystem && net && net.IsServer() && ZNet.IsOpenServer() &&
+                !zoneSystem.GetGlobalKey(MultiplayerWorldGlobalKey))
+            {
+                zoneSystem.SetGlobalKey(MultiplayerWorldGlobalKey);
             }
         }
 
@@ -322,6 +682,7 @@ namespace BuildingInspector
             {
                 throw new InvalidOperationException($"Could not create an icon for {variant.PrefabName}.");
             }
+            variant.Icon = config.Icon;
 
             var customPiece = new CustomPiece(prefab, false, config);
             customPiece.Piece.m_resources = Array.Empty<Piece.Requirement>();
@@ -450,6 +811,9 @@ namespace BuildingInspector
             float clothWidthInPoleSpace = clothWidth / poleScaleX;
             float clothHeightInPoleSpace = clothHeight / poleScaleY;
             float halfClothHeightInPoleSpace = clothHeightInPoleSpace * 0.5f;
+            const float clothThickness = 0.003f;
+            float poleWorldScaleZ = Mathf.Max(Mathf.Abs(pole.transform.lossyScale.z), 0.0001f);
+            float halfClothDepthInPoleSpace = clothThickness / poleWorldScaleZ * 0.5f;
             cloth.transform.localPosition = new Vector3(
                 -poleBounds.extents.x,
                 poleBounds.max.y - halfClothHeightInPoleSpace,
@@ -463,23 +827,55 @@ namespace BuildingInspector
             clothMesh.name = "InspectionFlagClothMesh";
             clothMesh.vertices = new[]
             {
-                new Vector3(0f, -halfClothHeightInPoleSpace, 0f),
-                new Vector3(clothWidthInPoleSpace, -halfClothHeightInPoleSpace, 0f),
-                new Vector3(clothWidthInPoleSpace, halfClothHeightInPoleSpace, 0f),
-                new Vector3(0f, halfClothHeightInPoleSpace, 0f),
-                new Vector3(0f, -halfClothHeightInPoleSpace, 0f),
-                new Vector3(clothWidthInPoleSpace, -halfClothHeightInPoleSpace, 0f),
-                new Vector3(clothWidthInPoleSpace, halfClothHeightInPoleSpace, 0f),
-                new Vector3(0f, halfClothHeightInPoleSpace, 0f)
+                new Vector3(0f, -halfClothHeightInPoleSpace, halfClothDepthInPoleSpace),
+                new Vector3(clothWidthInPoleSpace, -halfClothHeightInPoleSpace, halfClothDepthInPoleSpace),
+                new Vector3(clothWidthInPoleSpace, halfClothHeightInPoleSpace, halfClothDepthInPoleSpace),
+                new Vector3(0f, halfClothHeightInPoleSpace, halfClothDepthInPoleSpace),
+                new Vector3(0f, -halfClothHeightInPoleSpace, -halfClothDepthInPoleSpace),
+                new Vector3(clothWidthInPoleSpace, -halfClothHeightInPoleSpace, -halfClothDepthInPoleSpace),
+                new Vector3(clothWidthInPoleSpace, halfClothHeightInPoleSpace, -halfClothDepthInPoleSpace),
+                new Vector3(0f, halfClothHeightInPoleSpace, -halfClothDepthInPoleSpace),
+                new Vector3(0f, -halfClothHeightInPoleSpace, -halfClothDepthInPoleSpace),
+                new Vector3(0f, -halfClothHeightInPoleSpace, halfClothDepthInPoleSpace),
+                new Vector3(0f, halfClothHeightInPoleSpace, halfClothDepthInPoleSpace),
+                new Vector3(0f, halfClothHeightInPoleSpace, -halfClothDepthInPoleSpace),
+                new Vector3(clothWidthInPoleSpace, -halfClothHeightInPoleSpace, -halfClothDepthInPoleSpace),
+                new Vector3(clothWidthInPoleSpace, halfClothHeightInPoleSpace, -halfClothDepthInPoleSpace),
+                new Vector3(clothWidthInPoleSpace, halfClothHeightInPoleSpace, halfClothDepthInPoleSpace),
+                new Vector3(clothWidthInPoleSpace, -halfClothHeightInPoleSpace, halfClothDepthInPoleSpace),
+                new Vector3(0f, halfClothHeightInPoleSpace, -halfClothDepthInPoleSpace),
+                new Vector3(0f, halfClothHeightInPoleSpace, halfClothDepthInPoleSpace),
+                new Vector3(clothWidthInPoleSpace, halfClothHeightInPoleSpace, halfClothDepthInPoleSpace),
+                new Vector3(clothWidthInPoleSpace, halfClothHeightInPoleSpace, -halfClothDepthInPoleSpace),
+                new Vector3(0f, -halfClothHeightInPoleSpace, -halfClothDepthInPoleSpace),
+                new Vector3(0f, -halfClothHeightInPoleSpace, halfClothDepthInPoleSpace),
+                new Vector3(clothWidthInPoleSpace, -halfClothHeightInPoleSpace, halfClothDepthInPoleSpace),
+                new Vector3(clothWidthInPoleSpace, -halfClothHeightInPoleSpace, -halfClothDepthInPoleSpace)
             };
             clothMesh.uv = new[]
             {
                 new Vector2(0f, 0f), new Vector2(1f, 0f),
                 new Vector2(1f, 1f), new Vector2(0f, 1f),
                 new Vector2(0f, 0f), new Vector2(1f, 0f),
+                new Vector2(1f, 1f), new Vector2(0f, 1f),
+                new Vector2(0f, 0f), new Vector2(1f, 0f),
+                new Vector2(1f, 1f), new Vector2(0f, 1f),
+                new Vector2(0f, 0f), new Vector2(1f, 0f),
+                new Vector2(1f, 1f), new Vector2(0f, 1f),
+                new Vector2(0f, 0f), new Vector2(1f, 0f),
+                new Vector2(1f, 1f), new Vector2(0f, 1f),
+                new Vector2(0f, 0f), new Vector2(1f, 0f),
                 new Vector2(1f, 1f), new Vector2(0f, 1f)
             };
-            clothMesh.triangles = new[] { 0, 1, 2, 0, 2, 3, 4, 6, 5, 4, 7, 6 };
+            clothMesh.triangles = new[]
+            {
+                0, 1, 2, 0, 2, 3,
+                4, 6, 5, 4, 7, 6,
+                8, 9, 10, 8, 10, 11,
+                12, 13, 14, 12, 14, 15,
+                16, 17, 18, 16, 18, 19,
+                20, 21, 22, 20, 22, 23
+            };
             clothMesh.RecalculateNormals();
             clothMesh.RecalculateBounds();
             cloth.AddComponent<MeshFilter>().sharedMesh = clothMesh;
@@ -607,6 +1003,7 @@ namespace BuildingInspector
             public string Description { get; }
             public string PrefabName { get; }
             public Color Color { get; }
+            public Sprite Icon { get; set; }
 
             public FlagVariant(string displayName, string description, string prefabName, Color color)
             {
@@ -617,9 +1014,11 @@ namespace BuildingInspector
             }
         }
 
-        private sealed class FlagNoteReceiver : MonoBehaviour, TextReceiver, Hoverable
+        private sealed class FlagNoteReceiver : MonoBehaviour, Hoverable
         {
             private ZNetView nview;
+            private MeshRenderer clothRenderer;
+            private int appliedCategory = -1;
 
             private void Awake()
             {
@@ -632,9 +1031,31 @@ namespace BuildingInspector
                 if (nview)
                 {
                     nview.Register<string>(NoteRpcName, SetNoteRpc);
+                    nview.Register<int>(ChangeCategoryRpcName, ChangeCategoryRpc);
                 }
 
+                Transform clothTransform = transform.Find("InspectionFlagPole/InspectionFlagCloth");
+                clothRenderer = clothTransform ? clothTransform.GetComponent<MeshRenderer>() : null;
                 ApplyPlayerCollisionIgnores();
+            }
+
+            private void Update()
+            {
+                int categoryIndex = GetCategoryIndex();
+                if (categoryIndex < 0 || categoryIndex == appliedCategory)
+                {
+                    return;
+                }
+
+                int prefabCategoryIndex = GetPrefabCategoryIndex();
+                if (appliedCategory < 0 && prefabCategoryIndex == categoryIndex)
+                {
+                    appliedCategory = categoryIndex;
+                    return;
+                }
+
+                ApplyCategoryAppearance(categoryIndex);
+                appliedCategory = categoryIndex;
             }
 
             private void OnDestroy()
@@ -667,25 +1088,10 @@ namespace BuildingInspector
 
             private void ApplyPlayerCollisionIgnores()
             {
-                Player[] players = FindObjectsOfType<Player>();
+                Player[] players = FindObjectsByType<Player>(FindObjectsSortMode.None);
                 foreach (Player player in players)
                 {
                     IgnoreCollisionWith(player);
-                }
-            }
-
-            public void Open(ZNetView target)
-            {
-                nview = target;
-                Piece piece = nview ? nview.GetComponent<Piece>() : null;
-                if (!nview || nview.GetZDO() == null || !TextInput.instance || !piece)
-                {
-                    return;
-                }
-
-                if (piece.IsCreator())
-                {
-                    TextInput.instance.RequestText(this, "Inspection flag note", 160);
                 }
             }
 
@@ -695,33 +1101,242 @@ namespace BuildingInspector
                 return piece ? piece.GetCreator() : 0L;
             }
 
+            private int GetCategoryIndex()
+            {
+                ZDO zdo = nview ? nview.GetZDO() : null;
+                if (zdo == null)
+                {
+                    return -1;
+                }
+
+                int storedCategory = zdo.GetInt(FlagCategoryZdoKey, -1);
+                return storedCategory >= 0 && storedCategory < flagVariants.Length
+                    ? storedCategory
+                    : GetPrefabCategoryIndex();
+            }
+
+            public int GetEditorCategoryIndex()
+            {
+                return GetCategoryIndex();
+            }
+
+            private int GetPrefabCategoryIndex()
+            {
+                ZDO zdo = nview ? nview.GetZDO() : null;
+                ZNetScene scene = ZNetScene.instance;
+                GameObject prefab = zdo != null && scene ? scene.GetPrefab(zdo.GetPrefab()) : null;
+                if (!prefab || flagVariants == null)
+                {
+                    return -1;
+                }
+
+                for (int index = 0; index < flagVariants.Length; index++)
+                {
+                    if (string.Equals(prefab.name, flagVariants[index].PrefabName, StringComparison.Ordinal))
+                    {
+                        return index;
+                    }
+                }
+
+                return -1;
+            }
+
+            private string GetCategoryDisplayName()
+            {
+                int categoryIndex = GetCategoryIndex();
+                if (categoryIndex >= 0 && categoryIndex < labelNames.Count)
+                {
+                    string categoryName = string.IsNullOrWhiteSpace(labelNames[categoryIndex].Value)
+                        ? $"Category {categoryIndex + 1}"
+                        : labelNames[categoryIndex].Value.Trim();
+                    return $"Inspection Flag - {categoryName}";
+                }
+
+                Piece piece = GetComponent<Piece>();
+                return piece ? piece.m_name : "Inspection Flag";
+            }
+
+            private void ApplyCategoryAppearance(int categoryIndex)
+            {
+                if (clothRenderer && flagVariants != null && categoryIndex < flagVariants.Length)
+                {
+                    Color color = flagVariants[categoryIndex].Color;
+                    color.a = Mathf.Min(color.a, 0.85f);
+                    clothRenderer.material.color = color;
+                }
+            }
+
+            public bool CanEditCategory()
+            {
+                if (!nview)
+                {
+                    nview = GetComponent<ZNetView>();
+                }
+
+                Piece piece = nview ? nview.GetComponent<Piece>() : null;
+                ZDO zdo = nview ? nview.GetZDO() : null;
+                long creatorId = GetCreatorId();
+                bool isCreator = piece && piece.IsCreator();
+                return nview && zdo != null && piece && creatorId != 0L && isCreator;
+            }
+
+            public void RequestCategoryChange(int categoryIndex)
+            {
+                if (categoryIndex < 0 || categoryIndex >= flagVariants.Length || !CanEditCategory())
+                {
+                    return;
+                }
+
+                nview.InvokeRPC(ChangeCategoryRpcName, categoryIndex);
+            }
+
+            private void ChangeCategoryRpc(long sender, int categoryIndex)
+            {
+                Piece piece = nview ? nview.GetComponent<Piece>() : null;
+                long creatorId = GetCreatorId();
+                bool isOwner = nview && nview.IsOwner();
+                bool validSender = piece && IsSenderPlayer(sender, piece, creatorId);
+                ZDO zdo = nview ? nview.GetZDO() : null;
+
+                if (categoryIndex >= 0 && categoryIndex < flagVariants.Length &&
+                    isOwner && zdo != null && validSender)
+                {
+                    zdo.Set(FlagCategoryZdoKey, categoryIndex);
+                }
+                else
+                {
+                    log.LogWarning("Rejected inspection flag category update.");
+                }
+            }
+
+            public void SaveCreatorName(string creatorName)
+            {
+                Piece piece = GetComponent<Piece>();
+                ZDO zdo = nview ? nview.GetZDO() : null;
+                long creatorId = piece ? piece.GetCreator() : 0L;
+
+                if (piece && zdo != null && !string.IsNullOrWhiteSpace(creatorName) &&
+                    Player.m_localPlayer && Player.m_localPlayer.GetPlayerID() == creatorId)
+                {
+                    zdo.Set(CreatorNameZdoKey, creatorName);
+                }
+
+            }
+
+            private string GetCreatorName()
+            {
+                ZDO zdo = nview ? nview.GetZDO() : null;
+                string savedName = zdo != null ? zdo.GetString(CreatorNameZdoKey, string.Empty) : string.Empty;
+                if (!string.IsNullOrWhiteSpace(savedName))
+                {
+                    return savedName;
+                }
+
+                long creatorId = GetCreatorId();
+                Player localPlayer = Player.m_localPlayer;
+                bool localPlayerFound = localPlayer && localPlayer.GetPlayerID() == creatorId;
+
+                if (creatorId == 0L)
+                {
+                    return "Odin";
+                }
+
+                string resolvedName = string.Empty;
+                if (localPlayerFound)
+                {
+                    string localName = localPlayer.GetPlayerName();
+                    if (!string.IsNullOrWhiteSpace(localName))
+                    {
+                        resolvedName = localName;
+                    }
+                }
+
+                Player creatorPlayer = Player.GetPlayer(creatorId);
+                if (string.IsNullOrWhiteSpace(resolvedName) && creatorPlayer)
+                {
+                    string playerName = creatorPlayer.GetPlayerName();
+                    if (!string.IsNullOrWhiteSpace(playerName))
+                    {
+                        resolvedName = playerName;
+                    }
+                }
+
+                if (ZNet.instance)
+                {
+                    foreach (ZNetPeer peer in ZNet.instance.GetPeers())
+                    {
+                        if (peer.m_playerID != creatorId)
+                        {
+                            continue;
+                        }
+
+                        foreach (ZNet.PlayerInfo playerInfo in ZNet.instance.GetPlayerList())
+                        {
+                            if (!playerInfo.m_characterID.Equals(peer.m_characterID))
+                            {
+                                continue;
+                            }
+
+                            if (string.IsNullOrWhiteSpace(resolvedName) && !string.IsNullOrWhiteSpace(playerInfo.m_name))
+                            {
+                                resolvedName = playerInfo.m_name;
+                            }
+                        }
+
+                        break;
+                    }
+                }
+
+                if (string.IsNullOrWhiteSpace(resolvedName))
+                {
+                    return "Odin";
+                }
+
+                if (zdo != null && nview && nview.IsOwner())
+                {
+                    zdo.Set(CreatorNameZdoKey, resolvedName);
+                }
+
+                return resolvedName;
+            }
+
             public string GetText()
             {
-                return nview && nview.GetZDO() != null ? nview.GetZDO().GetString(NoteZdoKey, string.Empty) : string.Empty;
+                string note = nview && nview.GetZDO() != null
+                    ? nview.GetZDO().GetString(NoteZdoKey, string.Empty)
+                    : string.Empty;
+                return LimitNoteLength(note);
             }
 
             public string GetHoverText()
             {
                 Piece piece = GetComponent<Piece>();
-                string text = piece ? piece.m_name : "Inspection Flag";
+                string text = GetCategoryDisplayName();
+
                 string note = GetText();
                 if (!string.IsNullOrWhiteSpace(note))
                 {
                     text += $"\n<color=#FFE080>Note:</color> {note}";
                 }
 
+                if (ShouldShowInspectedBy())
+                {
+                    text += $"\nInspected by: {GetCreatorName()}";
+                }
+
+
+
                 long creatorId = GetCreatorId();
                 bool canEdit = nview && nview.GetZDO() != null && piece &&
                     creatorId != 0L && piece.IsCreator();
                 return canEdit
-                    ? text + $"\nPress [<color=yellow><b>{editNoteKey.Value}</b></color>] to edit note"
+                    ? text + $"\nPress [<color=yellow><b>{editNoteKey.Value}</b></color>] to edit flag"
                     : text + "\n<color=#AAAAAA>Only the player who placed this flag can edit its note.</color>";
             }
 
             public string GetHoverName()
             {
-                Piece piece = GetComponent<Piece>();
-                return piece ? piece.m_name : "Inspection Flag";
+                return GetCategoryDisplayName();
             }
 
             public float GetHoverOffset()
@@ -734,8 +1349,7 @@ namespace BuildingInspector
                 Piece piece = nview ? nview.GetComponent<Piece>() : null;
                 if (nview && nview.GetZDO() != null && piece && piece.IsCreator())
                 {
-                    log.LogInfo($"Submitting note update for flag {nview.GetZDO().m_uid}; creator={GetCreatorId()}.");
-                    nview.InvokeRPC(NoteRpcName, (text ?? string.Empty).Trim());
+                    nview.InvokeRPC(NoteRpcName, LimitNoteLength((text ?? string.Empty).Trim()));
                 }
             }
 
@@ -743,20 +1357,73 @@ namespace BuildingInspector
             {
                 Piece piece = nview ? nview.GetComponent<Piece>() : null;
                 long creatorId = GetCreatorId();
-                ZNetPeer peer = ZNet.instance ? ZNet.instance.GetPeer(sender) : null;
                 bool isOwner = nview && nview.IsOwner();
                 bool validSender = piece && IsSenderPlayer(sender, piece, creatorId);
-                log.LogInfo($"Received note update for flag {(nview && nview.GetZDO() != null ? nview.GetZDO().m_uid.ToString() : "unknown")}; sender={sender}, senderPlayer={(peer != null ? peer.m_playerID.ToString() : "unknown")}, creator={creatorId}, owner={isOwner}, authorized={validSender}.");
 
                 if (isOwner && nview.GetZDO() != null && validSender)
                 {
-                    nview.GetZDO().Set(NoteZdoKey, text ?? string.Empty);
+                    nview.GetZDO().Set(NoteZdoKey, LimitNoteLength(text));
                 }
                 else
                 {
                     log.LogWarning("Rejected inspection flag note update.");
                 }
             }
+        }
+
+        private bool WouldExceedNoteLimits(string text)
+        {
+            int characterCount = 0;
+
+            for (int i = 0; i < text.Length; i++)
+            {
+                char character = text[i];
+
+                if (character != '\n' && character != '\r')
+                {
+                    characterCount++;
+                }
+
+                if (characterCount > MaxNoteLength)
+                {
+                    return true;
+                }
+            }
+
+            Text textComponent = flagEditorNoteField.textComponent;
+            if (!textComponent)
+            {
+                return false;
+            }
+
+            TextGenerator generator = new TextGenerator();
+
+            TextGenerationSettings settings = textComponent.GetGenerationSettings(
+                textComponent.rectTransform.rect.size
+            );
+
+            settings.generateOutOfBounds = true;
+            settings.updateBounds = true;
+            settings.horizontalOverflow = HorizontalWrapMode.Wrap;
+            settings.verticalOverflow = VerticalWrapMode.Overflow;
+
+            generator.Populate(text, settings);
+
+            int lineCount = generator.lineCount;
+
+            return lineCount > MaxNoteLines;
+        }
+
+        private char ValidateNoteInput(string text, int charIndex, char addedChar)
+        {
+            string newText = text.Insert(charIndex, addedChar.ToString());
+
+            if (WouldExceedNoteLimits(newText))
+            {
+                return '\0';
+            }
+
+            return addedChar;
         }
 
         private static bool IsSenderPlayer(long sender, Piece piece, long playerId)
@@ -798,6 +1465,42 @@ namespace BuildingInspector
             return false;
         }
 
+        [HarmonyPatch(typeof(Piece), nameof(Piece.SetCreator))]
+        private static class InspectionFlagCreatorNamePatch
+        {
+            [HarmonyPostfix]
+            private static void Postfix(Piece __instance)
+            {
+                if (!__instance)
+                {
+                    return;
+                }
+
+                FlagNoteReceiver receiver = __instance.GetComponent<FlagNoteReceiver>();
+                if (!receiver)
+                {
+                    return;
+                }
+
+                long creatorId = __instance.GetCreator();
+                Player localPlayer = Player.m_localPlayer;
+                string creatorName = localPlayer && localPlayer.GetPlayerID() == creatorId
+                    ? localPlayer.GetPlayerName()
+                    : string.Empty;
+                receiver.SaveCreatorName(creatorName);
+            }
+        }
+
+        [HarmonyPatch(typeof(ZNet), "OpenServer")]
+        private static class MultiplayerWorldOpenServerPatch
+        {
+            [HarmonyPostfix]
+            private static void Postfix(ZNet __instance)
+            {
+                MarkMultiplayerWorldIfNeeded(__instance);
+            }
+        }
+
         [HarmonyPatch(typeof(Player), "Start")]
         private static class PlayerStartFlagCollisionPatch
         {
@@ -811,6 +1514,37 @@ namespace BuildingInspector
                         receiver.IgnoreCollisionWith(__instance);
                     }
                 }
+            }
+        }
+
+        [HarmonyPatch(typeof(Player), "TakeInput")]
+        private static class FlagEditorTakeInputPatch
+        {
+            [HarmonyPrefix]
+            private static bool Prefix(Player __instance, ref bool __result)
+            {
+                if (!flagEditorInputBlocked || __instance != Player.m_localPlayer)
+                {
+                    return true;
+                }
+
+                __result = false;
+                return false;
+            }
+        }
+
+        [HarmonyPatch(typeof(Player), "PlayerAttackInput")]
+        private static class FlagEditorAttackInputPatch
+        {
+            [HarmonyPrefix]
+            private static bool Prefix(Player __instance)
+            {
+                if (!flagEditorInputBlocked || __instance != Player.m_localPlayer)
+                {
+                    return true;
+                }
+
+                return false;
             }
         }
 
