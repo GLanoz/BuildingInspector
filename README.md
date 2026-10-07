@@ -1,4 +1,4 @@
-# Building Inspector 0.2.6
+# Building Inspector 0.2.7
 
 A minimal BepInEx plugin for Valheim. It adds six free flags to the regular Hammer's `Inspection` category: Problem, Review, Verified, Other, Structural, and Finish. Each label, description, and color can be customized in the mod configuration. An optional test flag can be enabled separately to check label settings without changing the six standard flags. Rotate flags around the surface normal with the mouse wheel. Flags align to the aimed surface, with the pole base anchored at the hit point. They use Valheim's building support system and collapse when unsupported; the six standard flags block one another from overlapping placement. The test flag is not part of that spacing rule. Cloth uses a lit runtime mesh with a subtle fabric texture and the selected color. Equip the regular Hammer to place or dismantle flags. The mod does not scan or analyze buildings automatically.
 
