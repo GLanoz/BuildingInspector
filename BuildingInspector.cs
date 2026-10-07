@@ -23,6 +23,7 @@ namespace BuildingInspector
         private const int FlagVariantCount = 6;
         private const string NoteRpcName = "BuildingInspector_SetFlagNote";
         private const string NoteZdoKey = "BuildingInspector_FlagNote";
+        private const string CreatorNameZdoKey = "BuildingInspector_FlagCreatorName";
 
         private static ManualLogSource log;
         private static readonly List<Texture2D> IconTextures = new List<Texture2D>();
@@ -667,7 +668,7 @@ namespace BuildingInspector
 
             private void ApplyPlayerCollisionIgnores()
             {
-                Player[] players = FindObjectsOfType<Player>();
+                Player[] players = FindObjectsByType<Player>(FindObjectsSortMode.None);
                 foreach (Player player in players)
                 {
                     IgnoreCollisionWith(player);
@@ -695,6 +696,122 @@ namespace BuildingInspector
                 return piece ? piece.GetCreator() : 0L;
             }
 
+            public void SaveCreatorName(string creatorName)
+            {
+                Piece piece = GetComponent<Piece>();
+                ZDO zdo = nview ? nview.GetZDO() : null;
+                long creatorId = piece ? piece.GetCreator() : 0L;
+                bool wroteName = false;
+
+                if (piece && zdo != null && !string.IsNullOrWhiteSpace(creatorName) &&
+                    Player.m_localPlayer && Player.m_localPlayer.GetPlayerID() == creatorId)
+                {
+                    zdo.Set(CreatorNameZdoKey, creatorName);
+                    wroteName = string.Equals(zdo.GetString(CreatorNameZdoKey, string.Empty), creatorName,
+                        StringComparison.Ordinal);
+                }
+
+                log.LogInfo($"Saved inspection flag creator name: creatorId={creatorId}, name='{creatorName}', zdoUid={(zdo != null ? zdo.m_uid.ToString() : "unavailable")}, writeSucceeded={wroteName}.");
+            }
+
+            private string GetCreatorName()
+            {
+                ZDO zdo = nview ? nview.GetZDO() : null;
+                string savedName = zdo != null ? zdo.GetString(CreatorNameZdoKey, string.Empty) : string.Empty;
+                if (!string.IsNullOrWhiteSpace(savedName))
+                {
+                    log.LogInfo($"Using saved inspection flag creator name: creatorId={GetCreatorId()}, characterName='{savedName}', zdoUid={zdo.m_uid}.");
+                    return savedName;
+                }
+
+                long creatorId = GetCreatorId();
+                Player localPlayer = Player.m_localPlayer;
+                bool localPlayerFound = localPlayer && localPlayer.GetPlayerID() == creatorId;
+                log.LogInfo($"Resolving inspection flag creator: creatorId={creatorId}, localPlayerFound={localPlayerFound}, localPlayerId={(localPlayer ? localPlayer.GetPlayerID().ToString() : "unknown")}.");
+
+                if (creatorId == 0L)
+                {
+                    log.LogInfo("Cannot resolve inspection flag creator name: creatorId is zero.");
+                    return "Odin";
+                }
+
+                string resolvedName = string.Empty;
+                if (localPlayerFound)
+                {
+                    string localName = localPlayer.GetPlayerName();
+                    string localCharacterId = ZNet.instance ? ZNet.instance.LocalPlayerCharacterID.ToString() : "unknown";
+                    log.LogInfo($"Inspection flag creator resolved as local player: characterID={localCharacterId}, m_name='{localName}'.");
+                    if (!string.IsNullOrWhiteSpace(localName))
+                    {
+                        resolvedName = localName;
+                    }
+                }
+
+                Player creatorPlayer = Player.GetPlayer(creatorId);
+                bool creatorPlayerFound = creatorPlayer;
+                log.LogInfo($"Inspection flag creator Player.GetPlayer lookup: found={creatorPlayerFound}, m_name='{(creatorPlayer ? creatorPlayer.GetPlayerName() : "")}'.");
+                if (string.IsNullOrWhiteSpace(resolvedName) && creatorPlayerFound)
+                {
+                    string playerName = creatorPlayer.GetPlayerName();
+                    if (!string.IsNullOrWhiteSpace(playerName))
+                    {
+                        resolvedName = playerName;
+                    }
+                }
+
+                bool peerFound = false;
+                bool playerInfoFound = false;
+                string matchedCharacterId = "unknown";
+                string matchedPlayerInfoName = string.Empty;
+                if (ZNet.instance)
+                {
+                    foreach (ZNetPeer peer in ZNet.instance.GetPeers())
+                    {
+                        if (peer.m_playerID != creatorId)
+                        {
+                            continue;
+                        }
+
+                        peerFound = true;
+                        log.LogInfo($"Inspection flag creator peer found: playerId={peer.m_playerID}, characterID={peer.m_characterID}.");
+                        foreach (ZNet.PlayerInfo playerInfo in ZNet.instance.GetPlayerList())
+                        {
+                            if (!playerInfo.m_characterID.Equals(peer.m_characterID))
+                            {
+                                continue;
+                            }
+
+                            playerInfoFound = true;
+                            matchedCharacterId = playerInfo.m_characterID.ToString();
+                            matchedPlayerInfoName = playerInfo.m_name;
+                            log.LogInfo($"Inspection flag creator PlayerInfo found: characterID={playerInfo.m_characterID}, m_name='{playerInfo.m_name}'.");
+                            if (string.IsNullOrWhiteSpace(resolvedName) && !string.IsNullOrWhiteSpace(playerInfo.m_name))
+                            {
+                                resolvedName = playerInfo.m_name;
+                            }
+                        }
+
+                        break;
+                    }
+                }
+
+                log.LogInfo($"Inspection flag creator lookup summary: creatorId={creatorId}, localPlayerFound={localPlayerFound}, creatorPlayerFound={creatorPlayerFound}, peerFound={peerFound}, playerInfoFound={playerInfoFound}, characterID={matchedCharacterId}, m_name='{matchedPlayerInfoName}', resolvedName='{resolvedName}'.");
+                if (string.IsNullOrWhiteSpace(resolvedName))
+                {
+                    return "Odin";
+                }
+
+                if (zdo != null && nview && nview.IsOwner())
+                {
+                    zdo.Set(CreatorNameZdoKey, resolvedName);
+                    bool cached = string.Equals(zdo.GetString(CreatorNameZdoKey, string.Empty), resolvedName,
+                        StringComparison.Ordinal);
+                    log.LogInfo($"Cached resolved inspection flag creator name: creatorId={creatorId}, name='{resolvedName}', zdoUid={zdo.m_uid}, writeSucceeded={cached}.");
+                }
+
+                return resolvedName;
+            }
+
             public string GetText()
             {
                 return nview && nview.GetZDO() != null ? nview.GetZDO().GetString(NoteZdoKey, string.Empty) : string.Empty;
@@ -704,6 +821,7 @@ namespace BuildingInspector
             {
                 Piece piece = GetComponent<Piece>();
                 string text = piece ? piece.m_name : "Inspection Flag";
+                text += $"\nInspected by: {GetCreatorName()}";
                 string note = GetText();
                 if (!string.IsNullOrWhiteSpace(note))
                 {
@@ -796,6 +914,32 @@ namespace BuildingInspector
             }
 
             return false;
+        }
+
+        [HarmonyPatch(typeof(Piece), nameof(Piece.SetCreator))]
+        private static class InspectionFlagCreatorNamePatch
+        {
+            [HarmonyPostfix]
+            private static void Postfix(Piece __instance)
+            {
+                if (!__instance)
+                {
+                    return;
+                }
+
+                FlagNoteReceiver receiver = __instance.GetComponent<FlagNoteReceiver>();
+                if (!receiver)
+                {
+                    return;
+                }
+
+                long creatorId = __instance.GetCreator();
+                Player localPlayer = Player.m_localPlayer;
+                string creatorName = localPlayer && localPlayer.GetPlayerID() == creatorId
+                    ? localPlayer.GetPlayerName()
+                    : string.Empty;
+                receiver.SaveCreatorName(creatorName);
+            }
         }
 
         [HarmonyPatch(typeof(Player), "Start")]
