@@ -18,7 +18,7 @@ namespace BuildingInspector
     {
         public const string PluginGUID = "Lanoz.BuildingInspector";
         public const string PluginName = "Building Inspector";
-        public const string PluginVersion = "0.2.5";
+        public const string PluginVersion = "0.2.6";
 
         private const int FlagVariantCount = 6;
         private const string NoteRpcName = "BuildingInspector_SetFlagNote";
@@ -28,7 +28,6 @@ namespace BuildingInspector
         private static readonly List<Texture2D> IconTextures = new List<Texture2D>();
         private static readonly List<FlagNoteReceiver> FlagReceivers = new List<FlagNoteReceiver>();
         private static Texture2D clothTexture;
-        private static Sprite clothSprite;
         private static ConfigEntry<KeyboardShortcut> tiltForwardKey;
         private static ConfigEntry<KeyboardShortcut> tiltBackwardKey;
         private static ConfigEntry<KeyboardShortcut> tiltLeftKey;
@@ -45,10 +44,8 @@ namespace BuildingInspector
         private static FlagNoteReceiver noteInput;
         private static float tiltX;
         private static float tiltZ;
+        private static float surfaceWheelRotation;
         private static GameObject lastTiltedGhost;
-        private static Quaternion lastGhostBaseRotation;
-        private static Quaternion lastGhostRotation;
-        private static bool hasLastGhostRotation;
 
         private void Awake()
         {
@@ -243,8 +240,6 @@ namespace BuildingInspector
             prefab.transform.localScale = Vector3.one * 0.5f;
             prefab.AddComponent<Piece>();
             prefab.AddComponent<FlagNoteReceiver>();
-            GameObject visuals = new GameObject("InspectionFlagVisuals");
-            visuals.transform.SetParent(prefab.transform, false);
 
             BoxCollider collider = prefab.GetComponent<BoxCollider>();
             if (!collider)
@@ -267,15 +262,16 @@ namespace BuildingInspector
             collider.size = new Vector3(0.55f, 1.4f, 0.16f);
             collider.isTrigger = false;
 
-            AddPrimitive(visuals, PrimitiveType.Cylinder, "InspectionFlagPole",
-                new Vector3(0f, 0.58f, 0f), new Vector3(0.027f, 0.68f, 0.027f),
+            // Root origin is the surface attachment point; the pole starts at local Y = 0.
+            GameObject pole = AddPrimitive(prefab, PrimitiveType.Cylinder, "InspectionFlagPole",
+                new Vector3(0f, 0.34f, 0f), new Vector3(0.027f, 0.68f, 0.027f),
                 woodMaterial, pieceLayer);
-            AddClothSprite(visuals, variant, pieceLayer);
+            AddClothSprite(pole, woodMaterial, variant, pieceLayer);
 
             WearNTear wearNTear = prefab.AddComponent<WearNTear>();
-            wearNTear.m_new = visuals;
-            wearNTear.m_worn = visuals;
-            wearNTear.m_broken = visuals;
+            wearNTear.m_new = pole;
+            wearNTear.m_worn = pole;
+            wearNTear.m_broken = pole;
             wearNTear.m_noRoofWear = true;
             wearNTear.m_noSupportWear = sourceWearNTear.m_noSupportWear;
             wearNTear.m_supports = false;
@@ -302,6 +298,8 @@ namespace BuildingInspector
             var customPiece = new CustomPiece(prefab, false, config);
             customPiece.Piece.m_resources = Array.Empty<Piece.Requirement>();
             customPiece.Piece.m_placeEffect = placeEffect;
+            // Keep native rotation enabled so Valheim does not treat the wheel as camera zoom.
+            // AlignFlagToSurface replaces its world-axis rotation with a surface-relative one.
             customPiece.Piece.m_canRotate = true;
 
             if (!PieceManager.Instance.AddPiece(customPiece))
@@ -312,7 +310,7 @@ namespace BuildingInspector
             return true;
         }
 
-        private static void AddPrimitive(GameObject parent, PrimitiveType type, string name,
+        private static GameObject AddPrimitive(GameObject parent, PrimitiveType type, string name,
             Vector3 localPosition, Vector3 localScale, Material material, int pieceLayer)
         {
             GameObject part = GameObject.CreatePrimitive(type);
@@ -337,41 +335,128 @@ namespace BuildingInspector
             {
                 renderer.sharedMaterial = material;
             }
+
+            return part;
         }
 
-        private static void AddClothSprite(GameObject parent, FlagVariant variant, int pieceLayer)
+        private static void AddClothSprite(GameObject pole, Material woodMaterial, FlagVariant variant, int pieceLayer)
         {
             if (!clothTexture)
             {
-                const int textureSize = 4;
+                const int textureSize = 16;
                 clothTexture = new Texture2D(textureSize, textureSize, TextureFormat.RGBA32, false);
                 Color32[] pixels = new Color32[textureSize * textureSize];
-                for (int index = 0; index < pixels.Length; index++)
+                for (int y = 0; y < textureSize; y++)
                 {
-                    pixels[index] = new Color32(255, 255, 255, 255);
+                    for (int x = 0; x < textureSize; x++)
+                    {
+                        bool warpThread = x % 4 == 0;
+                        bool weftThread = y % 4 == 0;
+                        byte shade = warpThread && weftThread ? (byte)236 :
+                            warpThread || weftThread ? (byte)246 : (byte)255;
+                        pixels[y * textureSize + x] = new Color32(shade, shade, shade, 255);
+                    }
                 }
 
                 clothTexture.SetPixels32(pixels);
                 clothTexture.Apply(false, true);
-                clothSprite = Sprite.Create(clothTexture, new Rect(0f, 0f, textureSize, textureSize),
-                    new Vector2(0.5f, 0.5f), textureSize);
-                clothSprite.name = "InspectionFlagClothSprite";
+                clothTexture.filterMode = FilterMode.Bilinear;
             }
 
+            Material clothMaterial = new Material(woodMaterial);
+            clothMaterial.name = $"{variant.PrefabName}_ClothMaterial";
+            clothMaterial.mainTexture = clothTexture;
+            Color clothColor = variant.Color;
+            clothColor.a = Mathf.Min(clothColor.a, 0.85f);
+            clothMaterial.color = clothColor;
+            if (clothMaterial.HasProperty("_Mode"))
+            {
+                clothMaterial.SetFloat("_Mode", 2f);
+            }
+            if (clothMaterial.HasProperty("_SrcBlend"))
+            {
+                clothMaterial.SetInt("_SrcBlend", (int)UnityEngine.Rendering.BlendMode.SrcAlpha);
+            }
+            if (clothMaterial.HasProperty("_DstBlend"))
+            {
+                clothMaterial.SetInt("_DstBlend", (int)UnityEngine.Rendering.BlendMode.OneMinusSrcAlpha);
+            }
+            if (clothMaterial.HasProperty("_ZWrite"))
+            {
+                clothMaterial.SetInt("_ZWrite", 0);
+            }
+            if (clothMaterial.HasProperty("_Cull"))
+            {
+                clothMaterial.SetInt("_Cull", (int)UnityEngine.Rendering.CullMode.Off);
+            }
+            if (clothMaterial.HasProperty("_Metallic"))
+            {
+                clothMaterial.SetFloat("_Metallic", 0f);
+            }
+            if (clothMaterial.HasProperty("_Glossiness"))
+            {
+                clothMaterial.SetFloat("_Glossiness", 0f);
+            }
+            if (clothMaterial.HasProperty("_EmissionColor"))
+            {
+                clothMaterial.SetColor("_EmissionColor", Color.black);
+            }
+            clothMaterial.DisableKeyword("_EMISSION");
+            clothMaterial.DisableKeyword("_ALPHATEST_ON");
+            clothMaterial.EnableKeyword("_ALPHABLEND_ON");
+            clothMaterial.DisableKeyword("_ALPHAPREMULTIPLY_ON");
+            clothMaterial.renderQueue = (int)UnityEngine.Rendering.RenderQueue.Transparent;
+
             GameObject cloth = new GameObject("InspectionFlagCloth");
-            cloth.transform.SetParent(parent.transform, false);
-            cloth.transform.localPosition = new Vector3(0.2f, 1.15f, 0f);
-            cloth.transform.localScale = new Vector3(0.39f, 0.24f, 1f);
+            // Keep the cloth geometry in pole-local space so every pole rotation carries it rigidly.
+            cloth.transform.SetParent(pole.transform, false);
+            const float clothWidth = 0.39f;
+            const float clothHeight = 0.24f;
+            MeshFilter poleMesh = pole ? pole.GetComponent<MeshFilter>() : null;
+            Vector3 poleScale = pole.transform.localScale;
+            float poleScaleX = Mathf.Max(Mathf.Abs(poleScale.x), 0.0001f);
+            float poleScaleY = Mathf.Max(Mathf.Abs(poleScale.y), 0.0001f);
+            Bounds poleBounds = poleMesh && poleMesh.sharedMesh
+                ? poleMesh.sharedMesh.bounds
+                : new Bounds(Vector3.zero, Vector3.one);
+            float clothWidthInPoleSpace = clothWidth / poleScaleX;
+            float clothHeightInPoleSpace = clothHeight / poleScaleY;
+            float halfClothHeightInPoleSpace = clothHeightInPoleSpace * 0.5f;
+            cloth.transform.localPosition = new Vector3(
+                -poleBounds.extents.x,
+                poleBounds.max.y - halfClothHeightInPoleSpace,
+                0f);
             if (pieceLayer >= 0)
             {
                 cloth.layer = pieceLayer;
             }
 
-            SpriteRenderer spriteRenderer = cloth.AddComponent<SpriteRenderer>();
-            spriteRenderer.sprite = clothSprite;
-            Color clothColor = variant.Color;
-            clothColor.a = Mathf.Min(clothColor.a, 0.5f);
-            spriteRenderer.color = clothColor;
+            Mesh clothMesh = new Mesh();
+            clothMesh.name = "InspectionFlagClothMesh";
+            clothMesh.vertices = new[]
+            {
+                new Vector3(0f, -halfClothHeightInPoleSpace, 0f),
+                new Vector3(clothWidthInPoleSpace, -halfClothHeightInPoleSpace, 0f),
+                new Vector3(clothWidthInPoleSpace, halfClothHeightInPoleSpace, 0f),
+                new Vector3(0f, halfClothHeightInPoleSpace, 0f),
+                new Vector3(0f, -halfClothHeightInPoleSpace, 0f),
+                new Vector3(clothWidthInPoleSpace, -halfClothHeightInPoleSpace, 0f),
+                new Vector3(clothWidthInPoleSpace, halfClothHeightInPoleSpace, 0f),
+                new Vector3(0f, halfClothHeightInPoleSpace, 0f)
+            };
+            clothMesh.uv = new[]
+            {
+                new Vector2(0f, 0f), new Vector2(1f, 0f),
+                new Vector2(1f, 1f), new Vector2(0f, 1f),
+                new Vector2(0f, 0f), new Vector2(1f, 0f),
+                new Vector2(1f, 1f), new Vector2(0f, 1f)
+            };
+            clothMesh.triangles = new[] { 0, 1, 2, 0, 2, 3, 4, 6, 5, 4, 7, 6 };
+            clothMesh.RecalculateNormals();
+            clothMesh.RecalculateBounds();
+            cloth.AddComponent<MeshFilter>().sharedMesh = clothMesh;
+            MeshRenderer clothRenderer = cloth.AddComponent<MeshRenderer>();
+            clothRenderer.sharedMaterial = clothMaterial;
         }
 
         private static void AlignFlagToSurface(Player player)
@@ -380,7 +465,6 @@ namespace BuildingInspector
             if (!ghost || !ghost.name.StartsWith("InspectionFlag", StringComparison.Ordinal))
             {
                 lastTiltedGhost = null;
-                hasLastGhostRotation = false;
                 return;
             }
 
@@ -407,24 +491,26 @@ namespace BuildingInspector
             {
                 tiltX = 0f;
                 tiltZ = 0f;
-                hasLastGhostRotation = false;
+                surfaceWheelRotation = 0f;
             }
 
-            Quaternion currentRotation = ghost.transform.rotation;
-            Quaternion baseRotation = !isNewGhost && hasLastGhostRotation &&
-                Quaternion.Angle(currentRotation, lastGhostRotation) < 0.1f
-                ? lastGhostBaseRotation
-                : currentRotation;
+            float scroll = Input.GetAxis("Mouse ScrollWheel");
+            if (Mathf.Abs(scroll) > 0.001f)
+            {
+                surfaceWheelRotation += Mathf.Sign(scroll) * 22.5f;
+            }
 
-            Vector3 forward = Vector3.ProjectOnPlane(baseRotation * Vector3.forward, hit.normal);
+            // Face the cloth toward the player; mouse-wheel rotation is applied around the surface normal.
+            Vector3 forward = Vector3.ProjectOnPlane(camera.transform.position - hit.point, hit.normal);
             if (forward.sqrMagnitude < 0.001f)
             {
-                forward = Vector3.ProjectOnPlane(camera.transform.forward, hit.normal);
+                forward = Vector3.ProjectOnPlane(-ray.direction, hit.normal);
             }
 
             if (forward.sqrMagnitude > 0.001f)
             {
                 Quaternion surfaceRotation = Quaternion.LookRotation(forward.normalized, hit.normal);
+                surfaceRotation = Quaternion.AngleAxis(surfaceWheelRotation, hit.normal) * surfaceRotation;
                 if (tiltForwardKey.Value.IsDown())
                 {
                     tiltX = Mathf.Clamp(tiltX + tiltStepDegrees.Value, -maxTiltDegrees.Value, maxTiltDegrees.Value);
@@ -448,13 +534,9 @@ namespace BuildingInspector
                 }
 
                 ghost.transform.rotation = surfaceRotation * Quaternion.Euler(tiltX, 0f, tiltZ);
-                Vector3 ghostToSurface = ghost.transform.position - hit.point;
-                Vector3 tangentOffset = Vector3.ProjectOnPlane(ghostToSurface, hit.normal);
-                ghost.transform.position = hit.point + tangentOffset - hit.normal * 0.12f;
+                // Root pivot is the pole base, so rotation leaves the surface anchor in place.
+                ghost.transform.position = hit.point;
                 lastTiltedGhost = ghost;
-                lastGhostBaseRotation = surfaceRotation;
-                lastGhostRotation = ghost.transform.rotation;
-                hasLastGhostRotation = true;
             }
         }
 
