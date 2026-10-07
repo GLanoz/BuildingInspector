@@ -37,10 +37,12 @@ namespace BuildingInspector
         private static ConfigEntry<float> maxTiltDegrees;
         private static ConfigEntry<KeyboardShortcut> editNoteKey;
         private static ConfigEntry<float> flagBlockRadius;
+        private static ConfigEntry<bool> testFlagEnabled;
         private static readonly List<ConfigEntry<string>> labelNames = new List<ConfigEntry<string>>();
         private static readonly List<ConfigEntry<string>> labelDescriptions = new List<ConfigEntry<string>>();
         private static readonly List<ConfigEntry<string>> labelColors = new List<ConfigEntry<string>>();
         private static FlagVariant[] flagVariants;
+        private static FlagVariant testFlagVariant;
         private static FlagNoteReceiver noteInput;
         private static float tiltX;
         private static float tiltZ;
@@ -99,6 +101,24 @@ namespace BuildingInspector
                 flagVariants[index] = new FlagVariant($"Inspection Flag - {name}", description, prefabNames[index], color);
             }
 
+            testFlagEnabled = Config.Bind("Test Flag", "Enabled", false,
+                "Register an isolated test flag for checking label configuration. Restart the game after changing this setting.");
+            string testName = Config.Bind("Test Flag", "Name", "Configuration Test",
+                "Display name for the optional test flag.").Value;
+            string testDescription = Config.Bind("Test Flag", "Description", "Temporary flag for testing label settings.",
+                "Description for the optional test flag.").Value;
+            string testColorValue = Config.Bind("Test Flag", "Color", "#FF00FF",
+                "Hex color for the optional test flag, for example #FF00FF.").Value;
+            Color testColor;
+            if (!ColorUtility.TryParseHtmlString(testColorValue, out testColor))
+            {
+                testColor = Color.magenta;
+                Logger.LogWarning($"Invalid Test Flag Color '{testColorValue}'; using #FF00FF.");
+            }
+
+            testName = string.IsNullOrWhiteSpace(testName) ? "Configuration Test" : testName.Trim();
+            testFlagVariant = new FlagVariant($"[TEST] Inspection Flag - {testName}",
+                testDescription ?? string.Empty, "InspectionFlagConfigTest", testColor);
         }
 
         private void RegisterInspectionFlag()
@@ -206,6 +226,14 @@ namespace BuildingInspector
             if (registeredCount != flagVariants.Length)
             {
                 throw new InvalidOperationException($"Only {registeredCount} of {flagVariants.Length} Inspection Flags were registered.");
+            }
+
+            if (testFlagEnabled.Value)
+            {
+                if (AddInspectionFlag(testFlagVariant, woodMaterial, sourcePiece.m_placeEffect, sourceWearNTear, pieceLayer))
+                {
+                    Logger.LogInfo("Optional configuration test flag registered.");
+                }
             }
 
             var blockingFlags = new List<Piece>();
