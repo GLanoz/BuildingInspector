@@ -21,6 +21,7 @@ namespace BuildingInspector
         public const string PluginVersion = "0.2.6";
 
         private const int FlagVariantCount = 6;
+        private const int MaxNoteLength = 160;
         private const string NoteRpcName = "BuildingInspector_SetFlagNote";
         private const string NoteZdoKey = "BuildingInspector_FlagNote";
         private const string CreatorNameZdoKey = "BuildingInspector_FlagCreatorName";
@@ -686,7 +687,7 @@ namespace BuildingInspector
 
                 if (piece.IsCreator())
                 {
-                    TextInput.instance.RequestText(this, "Inspection flag note", 160);
+                    TextInput.instance.RequestText(this, "Inspection flag note", MaxNoteLength);
                 }
             }
 
@@ -814,7 +815,10 @@ namespace BuildingInspector
 
             public string GetText()
             {
-                return nview && nview.GetZDO() != null ? nview.GetZDO().GetString(NoteZdoKey, string.Empty) : string.Empty;
+                string note = nview && nview.GetZDO() != null
+                    ? nview.GetZDO().GetString(NoteZdoKey, string.Empty)
+                    : string.Empty;
+                return LimitNoteLength(note);
             }
 
             public string GetHoverText()
@@ -853,7 +857,7 @@ namespace BuildingInspector
                 if (nview && nview.GetZDO() != null && piece && piece.IsCreator())
                 {
                     log.LogInfo($"Submitting note update for flag {nview.GetZDO().m_uid}; creator={GetCreatorId()}.");
-                    nview.InvokeRPC(NoteRpcName, (text ?? string.Empty).Trim());
+                    nview.InvokeRPC(NoteRpcName, LimitNoteLength((text ?? string.Empty).Trim()));
                 }
             }
 
@@ -868,12 +872,22 @@ namespace BuildingInspector
 
                 if (isOwner && nview.GetZDO() != null && validSender)
                 {
-                    nview.GetZDO().Set(NoteZdoKey, text ?? string.Empty);
+                    nview.GetZDO().Set(NoteZdoKey, LimitNoteLength(text));
                 }
                 else
                 {
                     log.LogWarning("Rejected inspection flag note update.");
                 }
+            }
+
+            private static string LimitNoteLength(string text)
+            {
+                if (string.IsNullOrEmpty(text))
+                {
+                    return string.Empty;
+                }
+
+                return text.Length <= MaxNoteLength ? text : text.Substring(0, MaxNoteLength);
             }
         }
 
