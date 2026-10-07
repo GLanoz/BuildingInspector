@@ -20,7 +20,7 @@ namespace BuildingInspector
     {
         public const string PluginGUID = "Lanoz.BuildingInspector";
         public const string PluginName = "Building Inspector";
-        public const string PluginVersion = "0.2.7";
+        public const string PluginVersion = "0.3.0";
 
         private const int FlagVariantCount = 6;
         private const int MaxNoteLength = 160;
